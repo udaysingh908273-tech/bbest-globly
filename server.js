@@ -46,6 +46,72 @@ const loadCatalog = () => readJSON('products.json', []);
 const loadOrders = () => readJSON('orders.json', []);
 const saveOrders = o => writeJSON('orders.json', o);
 
+// ---- AI configuration (optional; never claim live AI/research when not configured) ----
+const AI_API_KEY = process.env.AI_API_KEY || process.env.OPENAI_API_KEY || '';
+const AI_API_URL = process.env.AI_API_URL || 'https://api.openai.com/v1/chat/completions';
+const AI_MODEL = process.env.AI_MODEL || 'gpt-4.1-mini';
+const aiReady = !!AI_API_KEY;
+
+function normalizeProductBody(b, existingId) {
+  const name = String(b.name || '').trim();
+  const category = String(b.category || '').trim();
+  const price = Number(b.price_inr);
+  if (name.length < 2) throw new Error('Product name is required');
+  if (category.length < 2) throw new Error('Category is required');
+  if (!Number.isFinite(price) || price < 0) throw new Error('Invalid price');
+  const id = existingId || (name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,48) + '-' + crypto.randomBytes(3).toString('hex'));
+  return {
+    id,
+    name,
+    category,
+    tagline: String(b.tagline || '').trim().slice(0,240),
+    price_inr: Math.round(price),
+    compare_at_inr: Math.max(0, Math.round(Number(b.compare_at_inr) || 0)),
+    img: String(b.img || '').trim().slice(0,500),
+    badges: Array.isArray(b.badges) ? b.badges.map(x=>String(x).trim()).filter(Boolean).slice(0,3) : [],
+    description: String(b.description || '').trim().slice(0,4000),
+    features: Array.isArray(b.features) ? b.features.map(x=>String(x).trim()).filter(Boolean).slice(0,20) : [],
+    sku: String(b.sku || '').trim().slice(0,80),
+    stock: Number.isFinite(Number(b.stock)) ? Math.max(0, Math.floor(Number(b.stock))) : 0,
+    demo: false,
+    updated: new Date().toISOString()
+  };
+}
+
+async function askAI(message, context = {}, task = 'general') {
+  if (!aiReady) return {
+    configured:false,
+    reply:'AI provider is not configured yet. Add AI_API_KEY (or OPENAI_API_KEY) in Render environment variables. Live market research also requires a connected live data source/API.'
+  };
+  const system = [
+    'You are BBest Globly AI Business Manager.',
+    'Use only the supplied business context plus your model knowledge.',
+    'Never invent orders, customers, revenue, stock, prices, trend measurements, supplier facts, ad performance or live market facts.',
+    'When live/current research data is not supplied by a connected tool/source, explicitly say it is not verified live.',
+    'Distinguish REAL DATA, AI ANALYSIS, AI RECOMMENDATION, and NEEDS OWNER APPROVAL.',
+    'High-impact business actions require owner approval; do not instruct that money was spent or a product was published unless the system confirms it.',
+    'Be concise, practical, and helpful to the BBest Globly owner.'
+  ].join(' ');
+  const payload = {
+    model: AI_MODEL,
+    temperature: 0.2,
+    messages: [
+      {role:'system',content:system},
+      {role:'user',content:JSON.stringify({task,message,context})}
+    ]
+  };
+  const r = await fetch(AI_API_URL, {
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+AI_API_KEY},
+    body:JSON.stringify(payload)
+  });
+  let d={}; try{d=await r.json()}catch{}
+  if(!r.ok) throw new Error((d.error&&d.error.message)||'AI provider error');
+  const reply = d.choices?.[0]?.message?.content || d.output_text || 'No AI response received.';
+  return {configured:true, reply};
+}
+
+
 /* ---- admin bootstrap (password saved to data/admin.json — never printed to chat/logs) ---- */
 (function ensureAdmin() {
   if (fs.existsSync(fpath('admin.json'))) return;
@@ -210,9 +276,61 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, token: startSession('admin') });
     }
 
+    if (p === '/api/ai/chat' && req.method === 'POST') { return json(res, 401, {error:'admin authentication required'}); }
     if (p.startsWith('/api/admin/')) {
       const a = getAuth(req);
       if (!a || a.session.admin !== true) return json(res, 401, { error: 'admin access required' });
+
+      if (p === '/api/admin/products' && req.method === 'GET') return json(res, 200, loadCatalog());
+      if (p === '/api/admin/products' && req.method === 'POST') {
+        try {
+          const b = await readBody(req);
+          const catalog = loadCatalog();
+          const prod = normalizeProductBody(b);
+          if (catalog.some(x => x.id === prod.id || x.name.toLowerCase() === prod.name.toLowerCase())) return json(res, 409, {error:'A product with this name/id already exists'});
+          catalog.push(prod);
+          writeJSON('products.json', catalog);
+          return json(res, 201, {ok:true, product:prod});
+        } catch(e) { return json(res, 400, {error:e.message}); }
+      }
+      if (p.startsWith('/api/admin/products/') && req.method === 'PUT') {
+        try {
+          const id = decodeURIComponent(p.slice('/api/admin/products/'.length));
+          const b = await readBody(req);
+          const catalog = loadCatalog();
+          const ix = catalog.findIndex(x => x.id === id);
+          if (ix < 0) return json(res, 404, {error:'product not found'});
+          const prod = normalizeProductBody(b, id);
+          catalog[ix] = {...catalog[ix], ...prod};
+          writeJSON('products.json', catalog);
+          return json(res, 200, {ok:true, product:catalog[ix]});
+        } catch(e) { return json(res, 400, {error:e.message}); }
+      }
+      if (p.startsWith('/api/admin/products/') && req.method === 'DELETE') {
+        const id = decodeURIComponent(p.slice('/api/admin/products/'.length));
+        const catalog = loadCatalog();
+        const next = catalog.filter(x => x.id !== id);
+        if (next.length === catalog.length) return json(res, 404, {error:'product not found'});
+        writeJSON('products.json', next);
+        return json(res, 200, {ok:true, deleted:id});
+      }
+      if (p === '/api/admin/ai/status' && req.method === 'GET') {
+        return json(res, 200, {configured:aiReady, model:aiReady ? AI_MODEL : null, liveResearchConfigured:!!(process.env.RESEARCH_API_URL && process.env.RESEARCH_API_KEY)});
+      }
+      if (p === '/api/ai/chat' && req.method === 'POST') {
+        const b = await readBody(req);
+        const safeProducts = loadCatalog().map(x => ({id:x.id,name:x.name,category:x.category,price_inr:x.price_inr,stock:x.stock||0,tagline:x.tagline}));
+        const safeOrders = loadOrders().map(x => ({id:x.id,status:x.status,total_inr:x.totals?.total_inr,created:x.created,items:x.items?.map(i=>({id:i.id,name:i.name,qty:i.qty}))}));
+        try {
+          const result = await askAI(String(b.message||''), {
+            products: b.context?.products || safeProducts,
+            orders: b.context?.orders || safeOrders,
+            channel: String(b.channel||'dashboard')
+          }, String(b.task||'general'));
+          return json(res, 200, result);
+        } catch(e) { return json(res, 502, {configured:true,error:e.message}); }
+      }
+
       if (p === '/api/admin/orders' && req.method === 'GET') return json(res, 200, loadOrders().reverse());
       if (p === '/api/admin/stats' && req.method === 'GET') {
         const orders = loadOrders();
@@ -276,6 +394,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p.startsWith('/api/')) return json(res, 404, { error: 'unknown api route' });
+
+
+    if (p === '/dashboard' || p === '/dashboard.html') {
+      return fs.readFile(path.join(ROOT, 'dashboard.html'), (err, data) => err ? json(res,404,{error:'dashboard not found'}) : send(res,200,data,MIME['.html']));
+    }
 
     /* ---------------- static files ---------------- */
     const fp = p === '/' ? '/index.html' : p;

@@ -262,6 +262,34 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, mine);
     }
 
+
+    /* ---------------- AI support ---------------- */
+    if (p === '/api/ai/chat' && req.method === 'POST') {
+      const a = getAuth(req);
+      const b = await readBody(req);
+      const channel = String(b.channel || 'website');
+      if (channel !== 'website' && (!a || a.session.admin !== true)) {
+        return json(res, 401, {error:'admin authentication required'});
+      }
+      const publicProducts = loadCatalog().map(x => ({
+        id:x.id,name:x.name,category:x.category,price_inr:x.price_inr,
+        stock:x.stock||0,tagline:x.tagline,description:x.description
+      }));
+      let context = {products:publicProducts, channel};
+      if (a && a.session.admin === true) {
+        context.orders = loadOrders().map(x => ({
+          id:x.id,status:x.status,total_inr:x.totals?.total_inr,created:x.created,
+          items:x.items?.map(i=>({id:i.id,name:i.name,qty:i.qty}))
+        }));
+      }
+      try {
+        const result = await askAI(String(b.message||''), context, String(b.task||'general'));
+        return json(res, 200, result);
+      } catch(e) {
+        return json(res, 502, {configured:true,error:e.message});
+      }
+    }
+
     /* ---------------- admin ---------------- */
     if (p === '/api/admin/login' && req.method === 'POST') {
       const b = await readBody(req);
@@ -276,7 +304,6 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, token: startSession('admin') });
     }
 
-    if (p === '/api/ai/chat' && req.method === 'POST') { return json(res, 401, {error:'admin authentication required'}); }
     if (p.startsWith('/api/admin/')) {
       const a = getAuth(req);
       if (!a || a.session.admin !== true) return json(res, 401, { error: 'admin access required' });
@@ -316,19 +343,6 @@ const server = http.createServer(async (req, res) => {
       }
       if (p === '/api/admin/ai/status' && req.method === 'GET') {
         return json(res, 200, {configured:aiReady, model:aiReady ? AI_MODEL : null, liveResearchConfigured:!!(process.env.RESEARCH_API_URL && process.env.RESEARCH_API_KEY)});
-      }
-      if (p === '/api/ai/chat' && req.method === 'POST') {
-        const b = await readBody(req);
-        const safeProducts = loadCatalog().map(x => ({id:x.id,name:x.name,category:x.category,price_inr:x.price_inr,stock:x.stock||0,tagline:x.tagline}));
-        const safeOrders = loadOrders().map(x => ({id:x.id,status:x.status,total_inr:x.totals?.total_inr,created:x.created,items:x.items?.map(i=>({id:i.id,name:i.name,qty:i.qty}))}));
-        try {
-          const result = await askAI(String(b.message||''), {
-            products: b.context?.products || safeProducts,
-            orders: b.context?.orders || safeOrders,
-            channel: String(b.channel||'dashboard')
-          }, String(b.task||'general'));
-          return json(res, 200, result);
-        } catch(e) { return json(res, 502, {configured:true,error:e.message}); }
       }
 
       if (p === '/api/admin/orders' && req.method === 'GET') return json(res, 200, loadOrders().reverse());

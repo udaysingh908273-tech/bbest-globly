@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0f172a">
+<title>BBest Globly — Business Center</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+<div class="dash-shell">
+<aside class="sidebar">
+<div class="brand">BBest <span>Globly</span><small>Business Center</small></div>
+<nav>
+<button data-view="overview" class="nav-btn active">Overview</button>
+<button data-view="products" class="nav-btn">Products</button>
+<button data-view="orders" class="nav-btn">Orders</button>
+<button data-view="research" class="nav-btn">AI Research</button>
+<button data-view="marketing" class="nav-btn">Marketing</button>
+<button data-view="seo" class="nav-btn">SEO</button>
+<button data-view="support" class="nav-btn">Support</button>
+<button data-view="approvals" class="nav-btn">Approvals</button>
+</nav>
+<a href="/" class="store-link">← Open storefront</a>
+</aside>
+<main class="main">
+<header class="topbar">
+<div><p class="eyebrow">BBEST GLOBLY AI COMMAND CENTER</p><h1 id="pageTitle">Business Overview</h1></div>
+<div class="top-actions"><span id="integrationStatus" class="status">Checking AI…</span><button id="logoutBtn" class="ghost">Logout</button></div>
+</header>
+<section id="loginPanel" class="panel login-panel hidden">
+<h2>Owner / Manager Login</h2><p>Use the existing BBest Globly admin credentials.</p>
+<input id="loginUser" value="admin" placeholder="Username"><input id="loginPass" type="password" placeholder="Password">
+<button id="loginBtn" class="primary">Login</button><p id="loginErr" class="error"></p>
+</section>
+<section id="appPanel" class="hidden">
+<div id="overview" class="view"></div><div id="products" class="view hidden"></div><div id="orders" class="view hidden"></div>
+<div id="research" class="view hidden"></div><div id="marketing" class="view hidden"></div><div id="seo" class="view hidden"></div>
+<div id="support" class="view hidden"></div><div id="approvals" class="view hidden"></div>
+</section>
+</main>
+</div>
+<script src="/dashboard.js"></script>
+</body>
+</html>

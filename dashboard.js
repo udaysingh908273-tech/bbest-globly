@@ -5,7 +5,41 @@ function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 async function refresh(){products=await api('/api/admin/products');orders=await api('/api/admin/orders')}
 function setView(v){currentView=v;$$('.view').forEach(x=>x.classList.toggle('hidden',x.id!==v));$$('.nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.view===v));const t={overview:'Business Overview',products:'Product Management',orders:'Orders',research:'AI Product Research',marketing:'AI Marketing',seo:'AI SEO Manager',support:'Customer Support',approvals:'Approval Center'};$('#pageTitle').textContent=t[v]||'Business Overview';render()}
 function render(){if(!token)return;if(currentView==='overview')overview();if(currentView==='products')productView();if(currentView==='orders')orderView();if(currentView==='research')researchView();if(currentView==='marketing')marketingView();if(currentView==='seo')seoView();if(currentView==='support')supportView();if(currentView==='approvals')approvalView()}
-function overview(){const revenue=orders.filter(o=>o.status!=='CANCELLED').reduce((s,o)=>s+Number(o.totals?.total_inr||0),0),pending=orders.filter(o=>o.status==='PENDING').length;$('#overview').innerHTML='<div class="grid stats"><div class="stat"><div class="label">Orders</div><div class="value">'+orders.length+'</div></div><div class="stat"><div class="label">Revenue</div><div class="value">'+money(revenue)+'</div></div><div class="stat"><div class="label">Pending</div><div class="value">'+pending+'</div></div><div class="stat"><div class="label">Products</div><div class="value">'+products.length+'</div></div></div><div class="section-card"><div class="section-head"><h2>Store Overview</h2><span class="badge">AI Manager on the right →</span></div><p class="muted">Your main dashboard stays clean. Open the AI Manager from the right side whenever you need it.</p></div><div class="section-card"><div class="section-head"><h2>Quick actions</h2></div><div class="actions"><button class="btn soft" data-go="products">Add product</button><button class="btn soft" data-go="research">Research products</button><button class="btn soft" data-go="marketing">Create campaign</button><button class="btn soft" data-go="seo">SEO audit</button></div></div>';$('[data-go="products"]').onclick=()=>setView('products');$('[data-go="research"]').onclick=()=>setView('research');$('[data-go="marketing"]').onclick=()=>setView('marketing');$('[data-go="seo"]').onclick=()=>setView('seo')}async function askAI(command){
+function overview(){const revenue=orders.filter(o=>o.status!=='CANCELLED').reduce((s,o)=>s+Number(o.totals?.total_inr||0),0),pending=orders.filter(o=>o.status==='PENDING').length;$('#overview').innerHTML='<div class="grid stats"><div class="stat"><div class="label">Orders</div><div class="value">'+orders.length+'</div></div><div class="stat"><div class="label">Revenue</div><div class="value">'+money(revenue)+'</div></div><div class="stat"><div class="label">Pending</div><div class="value">'+pending+'</div></div><div class="stat"><div class="label">Products</div><div class="value">'+products.length+'</div></div></div><div class="section-card"><div class="section-head"><h2>Store Overview</h2><span class="badge">AI Manager on the right →</span></div><p class="muted">Your main dashboard stays clean. Open the AI Manager from the right side whenever you need it.</p></div><div class="section-card"><div class="section-head"><h2>Quick actions</h2></div><div class="actions"><button class="btn soft" data-go="products">Add product</button><button class="btn soft" data-go="research">Research products</button><button class="btn soft" data-go="marketing">Create campaign</button><button class="btn soft" data-go="seo">SEO audit</button></div></div>';$('[data-go="products"]').onclick=()=>setView('products');$('[data-go="research"]').onclick=()=>setView('research');$('[data-go="marketing"]').onclick=()=>setView('marketing');$('[data-go="seo"]').onclick=()=>setView('seo')}function renderAgentActions(actions){
+  const box=$('#aiHistory'); if(!box) return;
+  const cards=(actions||[]).map((a,i)=>{
+    const safe=JSON.stringify(a.payload||{}).replace(/</g,'\\u003c');
+    return '<div class="agent-action" id="agentAction'+i+'"><strong>Agent action</strong><div class="agent-type">'+esc(a.type||'action')+'</div><div class="muted">'+esc(a.reason||'Owner approval required')+'</div><pre>'+esc(JSON.stringify(a.payload||{},null,2))+'</pre><button class="btn primary agent-approve" data-index="'+i+'">Approve & Execute</button></div>';
+  }).join('');
+  box.insertAdjacentHTML('beforeend',cards);
+  $('#aiHistory .agent-approve').forEach(btn=>btn.onclick=async()=>{
+    const idx=Number(btn.dataset.index), action=actions[idx]; btn.disabled=true; btn.textContent='Executing…';
+    try{
+      const d=await api('/api/admin/agent/execute',{method:'POST',body:{type:action.type,payload:action.payload}});
+      btn.textContent='Done ✓'; btn.classList.remove('primary'); btn.classList.add('soft');
+      aiHistory.push({role:'assistant',content:'Executed '+action.type+' successfully.'});
+      await refresh(); setView(currentView);
+    }catch(e){btn.disabled=false;btn.textContent='Approve & Execute';alert(e.message)}
+  });
+}
+async function runAgent(command){
+  if(!command.trim())return;
+  const input=$('#aiCommand'), out=$('#aiOutput'), historyBox=$('#aiHistory');
+  const userMessage=command.trim();
+  aiHistory.push({role:'user',content:'[AGENT] '+userMessage});
+  if(historyBox) historyBox.innerHTML=aiHistory.map(m=>'<div class="ai-message '+m.role+'"><strong>'+esc(m.role==='user'?'You':'AI')+'</strong><div>'+esc(m.content)+'</div></div>').join('');
+  out.textContent='Planning…';
+  try{
+    const d=await api('/api/admin/agent/command',{method:'POST',body:{command:userMessage}});
+    const reply=d.reply||'Agent plan ready.';
+    aiHistory.push({role:'assistant',content:reply});
+    if(historyBox) historyBox.innerHTML=aiHistory.map(m=>'<div class="ai-message '+m.role+'"><strong>'+esc(m.role==='user'?'You':'AI')+'</strong><div>'+esc(m.content)+'</div></div>').join('');
+    if(d.actions?.length) renderAgentActions(d.actions);
+    out.textContent=d.actions?.length?('Agent found '+d.actions.length+' action(s). Approve the ones you want executed.'):'No executable action was generated.';
+    input.value=''; input.focus();
+  }catch(e){out.textContent='Agent error: '+e.message}
+}
+async function askAI(command){
   if(!command.trim())return;
   const input=$('#aiCommand'),out=$('#aiOutput'),historyBox=$('#aiHistory');
   const userMessage=command.trim();
@@ -46,6 +80,7 @@ function initAISidePanel(){
   const shut=()=>{panel.classList.remove('open');backdrop.classList.remove('open')};
   toggle.onclick=open; close.onclick=shut; backdrop.onclick=shut;
   $('#askAI').onclick=()=>askAI($('#aiCommand').value);
+  $('#runAgent').onclick=()=>runAgent($('#aiCommand').value);
   $('#dailyReport').onclick=()=>askAI('Give a daily business report using actual BBest Globly data. Do not invent numbers.');
   $('#aiCommand').addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter') askAI(e.currentTarget.value)});
 }

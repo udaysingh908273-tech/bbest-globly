@@ -39,7 +39,77 @@ fs.mkdirSync(DATA, { recursive: true });
 
 const fpath = f => path.join(DATA, f);
 const readJSON = (f, d) => { try { return JSON.parse(fs.readFileSync(fpath(f), 'utf8')); } catch (e) { return d; } };
-const writeJSON = (f, d) => fs.writeFileSync(fpath(f), JSON.stringify(d, null, 2));
+const writeJSON = (f, d) => {
+  fs.writeFileSync(fpath(f), JSON.stringify(d, null, 2));
+  if (typeof syncJsonFile === 'function') queueMicrotask(() => syncJsonFile(f, d).catch(e => console.error('[supabase sync]', e.message)));
+};
+
+const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\\/+$/, '');
+const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const supabaseReady = !!(SUPABASE_URL && SUPABASE_SECRET_KEY);
+
+async function supabaseRequest(pathname, options = {}) {
+  if (!supabaseReady) throw new Error('Supabase is not configured');
+  const r = await fetch(SUPABASE_URL + '/rest/v1/' + pathname, {
+    ...options,
+    headers: {
+      'Content-Type':'application/json',
+      'apikey':SUPABASE_SECRET_KEY,
+      'Authorization':'Bearer '+SUPABASE_SECRET_KEY,
+      ...(options.headers||{})
+    }
+  });
+  const text = await r.text();
+  let data = null; try { data = text ? JSON.parse(text) : null; } catch {}
+  if (!r.ok) throw new Error('Supabase '+r.status+': '+(data?.message || data?.hint || text || 'request failed'));
+  return data;
+}
+
+async function syncJsonFile(file, data) {
+  if (!supabaseReady) return;
+  if (file === 'products.json') {
+    const rows = (Array.isArray(data)?data:[]).map(x => ({
+      id:x.id,name:x.name,category:x.category||'',tagline:x.tagline||'',
+      price_inr:Number(x.price_inr||0),compare_at_inr:Number(x.compare_at_inr||0),
+      img:x.img||'',badges:x.badges||[],demo:!!x.demo,description:x.description||'',
+      features:x.features||[],sku:x.sku||null,stock:Number(x.stock??100),updated_at:new Date().toISOString()
+    }));
+    await supabaseRequest('products?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(rows)});
+  } else if (file === 'orders.json') {
+    const rows=(Array.isArray(data)?data:[]).map(x=>({...x,created:x.created||new Date().toISOString()}));
+    if(rows.length) await supabaseRequest('orders?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(rows)});
+  } else if (file === 'customers.json') {
+    const rows=(Array.isArray(data)?data:[]).map(x=>({id:x.id,name:x.name,email:x.email,phone:x.phone||'',pass:x.pass,salt:x.salt,created:x.created||new Date().toISOString()}));
+    if(rows.length) await supabaseRequest('customers?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(rows)});
+  } else if (file === 'site_config.json') {
+    await supabaseRequest('site_config?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify([{id:'default',config:data,updated_at:new Date().toISOString()}])});
+  } else if (file === 'business_knowledge.json') {
+    await supabaseRequest('business_knowledge?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify([{id:'default',knowledge:data,updated_at:new Date().toISOString()}])});
+  }
+}
+
+async function hydrateSupabase() {
+  if (!supabaseReady) return;
+  try {
+    const products=await supabaseRequest('products?select=*&order=created_at.asc');
+    if(Array.isArray(products) && products.length) writeJSON('products.json',products.map(x=>({
+      id:x.id,name:x.name,category:x.category,tagline:x.tagline,price_inr:Number(x.price_inr),
+      compare_at_inr:Number(x.compare_at_inr||0),img:x.img,badges:x.badges||[],demo:!!x.demo,
+      description:x.description,features:x.features||[],sku:x.sku,stock:Number(x.stock||0)
+    })));
+    const orders=await supabaseRequest('orders?select=*&order=created.asc');
+    if(Array.isArray(orders)) writeJSON('orders.json',orders);
+    const customers=await supabaseRequest('customers?select=*&order=created.asc');
+    if(Array.isArray(customers)) writeJSON('customers.json',customers);
+    const cfg=await supabaseRequest('site_config?select=config&id=eq.default');
+    if(cfg?.[0]?.config) writeJSON('site_config.json',cfg[0].config);
+    const bk=await supabaseRequest('business_knowledge?select=knowledge&id=eq.default');
+    if(bk?.[0]?.knowledge) writeJSON('business_knowledge.json',bk[0].knowledge);
+    console.log('[supabase] persistence connected');
+  } catch(e) {
+    console.error('[supabase hydrate]',e.message);
+  }
+}
 const send = (res, code, body, type) => { res.writeHead(code, { 'Content-Type': type || 'application/json' }); res.end(body); };
 const json = (res, code, obj) => send(res, code, JSON.stringify(obj));
 const hashPw = (pw, salt) => crypto.scryptSync(String(pw), salt, 32).toString('hex');
@@ -543,4 +613,6 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v2.1 listening on http://0.0.0.0:' + PORT));
+hydrateSupabase().finally(() => {
+  server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v2.1 listening on http://0.0.0.0:' + PORT));
+});

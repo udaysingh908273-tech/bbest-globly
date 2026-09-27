@@ -49,7 +49,7 @@ const saveOrders = o => writeJSON('orders.json', o);
 // ---- AI configuration (optional; never claim live AI/research when not configured) ----
 const AI_API_KEY = process.env.AI_API_KEY || process.env.OPENAI_API_KEY || '';
 const AI_API_URL = process.env.AI_API_URL || 'https://openrouter.ai/api/v1/chat/completions';
-const AI_MODEL = process.env.AI_MODEL || 'qwen/qwen3.8-27b:free';
+const AI_MODEL = process.env.AI_MODEL || 'openrouter/free';
 const aiReady = !!AI_API_KEY;
 
 function normalizeProductBody(b, existingId) {
@@ -102,11 +102,11 @@ async function askAI(message, context = {}, task = 'general') {
   };
   const r = await fetch(AI_API_URL, {
     method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':'Bearer '+AI_API_KEY},
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+AI_API_KEY,'HTTP-Referer':BASE_URL,'X-Title':'BBest Globly'},
     body:JSON.stringify(payload)
   });
   let d={}; try{d=await r.json()}catch{}
-  if(!r.ok) throw new Error((d.error&&d.error.message)||'AI provider error');
+  if(!r.ok) throw new Error((d.error&&d.error.message)||d.message||('AI provider HTTP '+r.status));
   const reply = d.choices?.[0]?.message?.content || d.output_text || 'No AI response received.';
   return {configured:true, reply};
 }

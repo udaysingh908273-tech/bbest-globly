@@ -1,0 +1,15 @@
+{
+  "brand": "BBest Globly",
+  "hero": {
+    "kicker": "✦ New arrivals · 2026 collection",
+    "title": "Everyday upgrades, curated for India & the world.",
+    "subtitle": "Trending tech, wellness and home picks — hand-picked, honestly priced, delivered to your door."
+  },
+  "theme": {
+    "accent": "#4f46e5"
+  },
+  "features": {
+    "cod": true,
+    "tracking": true
+  }
+}

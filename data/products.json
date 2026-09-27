@@ -1,0 +1,146 @@
+[
+  {
+    "id": "galaxy-projector",
+    "name": "Astronaut Galaxy Projector",
+    "category": "Home & Decor",
+    "tagline": "Turn any room into a drifting starry night sky",
+    "price_inr": 1299,
+    "compare_at_inr": 1999,
+    "img": "img/p1.jpg",
+    "badges": ["Trending"],
+    "demo": true,
+    "description": "A compact ambient projector that casts a soothing starry-sky effect across your walls and ceiling. Perfect for bedrooms, gaming setups, movie nights and gifting — the kind of upgrade that makes everyone say 'waah'.",
+    "features": [
+      "Ambient starry projection for walls & ceilings",
+      "Compact, desk-friendly design",
+      "USB powered — works with adapters and power banks",
+      "A favourite for bedrooms, gaming corners & gifts"
+    ]
+  },
+  {
+    "id": "charging-dock",
+    "name": "3-in-1 Magnetic Wireless Charging Dock",
+    "category": "Mobile & Tech",
+    "tagline": "One dock for your phone, watch and earbuds",
+    "price_inr": 1499,
+    "compare_at_inr": 2299,
+    "img": "img/p2.jpg",
+    "badges": ["Trending"],
+    "demo": true,
+    "description": "Declutter your nightstand. Charge your phone, smartwatch and earbuds together from a single dock with a clean, foldable design that travels well.",
+    "features": [
+      "Charges phone + watch + earbuds from one station",
+      "Magnetic snap-on alignment for compatible phones",
+      "Foldable, travel-friendly footprint",
+      "Cleaner desk, fewer cables"
+    ]
+  },
+  {
+    "id": "posture-corrector",
+    "name": "Adjustable Posture Corrector",
+    "category": "Health & Wellness",
+    "tagline": "Gentle support for long desk days",
+    "price_inr": 699,
+    "compare_at_inr": 1199,
+    "img": "img/p3.jpg",
+    "badges": ["New"],
+    "demo": true,
+    "description": "A lightweight support brace that gently reminds your shoulders to stay back during long hours at a desk or phone. Wear it under clothing during work or study sessions.",
+    "features": [
+      "Adjustable straps for a custom fit",
+      "Lightweight — wears discreetly under clothing",
+      "Supports shoulders & upper back alignment",
+      "Designed for desk work, studying & commutes"
+    ]
+  },
+  {
+    "id": "portable-blender",
+    "name": "Portable Blender Bottle",
+    "category": "Kitchen & Wellness",
+    "tagline": "Fresh shakes and smoothies, anywhere",
+    "price_inr": 999,
+    "compare_at_inr": 1599,
+    "img": "img/p4.jpg",
+    "badges": ["Gift Pick"],
+    "demo": true,
+    "description": "Blend and drink from the same bottle. Great for gym bags, office desks and travel — throw in fruit, add liquid, blend, rinse, done.",
+    "features": [
+      "Blend & drink from one bottle",
+      "USB rechargeable",
+      "Fits in gym bags & travel kits",
+      "Quick-rinse cleanup"
+    ]
+  },
+  {
+    "id": "smart-fitness-ring",
+    "name": "Smart Fitness Ring",
+    "category": "Fitness & Wearables",
+    "tagline": "Health tracking, minus the watch tan",
+    "price_inr": 2499,
+    "compare_at_inr": 3999,
+    "img": "img/p5.jpg",
+    "badges": ["New"],
+    "demo": true,
+    "description": "A discreet wearable that tracks your activity and sleep through the night without a bulky screen. Syncs to a companion app for your daily readiness snapshot.",
+    "features": [
+      "Tracks activity, sleep & recovery signals",
+      "Sleek, lightweight all-day wear",
+      "Pairs with a companion app",
+      "Includes compact charging case"
+    ]
+  },
+  {
+    "id": "pet-grooming-glove",
+    "name": "Pet Grooming Glove",
+    "category": "Pet Care",
+    "tagline": "Grooming your pet feels like petting",
+    "price_inr": 449,
+    "compare_at_inr": 799,
+    "img": "img/p6.jpg",
+    "badges": ["Trending"],
+    "demo": true,
+    "description": "The gentle way to control shedding. Soft silicone tips lift loose fur while your pet enjoys what feels like a normal petting session.",
+    "features": [
+      "Soft silicone tips lift loose fur",
+      "One-size adjustable glove",
+      "Works for cats & dogs",
+      "Less fur on sofas and clothes"
+    ]
+  },
+  {
+    "id": "led-strip-lights",
+    "name": "Smart LED Strip Lights",
+    "category": "Home & Decor",
+    "tagline": "Instant designer mood lighting for any room",
+    "price_inr": 799,
+    "compare_at_inr": 1299,
+    "img": "img/p7.jpg",
+    "badges": ["Trending"],
+    "demo": true,
+    "description": "Peel, stick, transform. Flexible LED strips behind your TV, desk or bed frame create an instant designer look — with adjustable colours and modes from the controller.",
+    "features": [
+      "Flexible self-adhesive strip",
+      "Multiple colours & modes via controller",
+      "Cuttable to fit your space",
+      "Great behind TVs, desks & headboards"
+    ]
+  },
+  {
+    "id": "scalp-massager",
+    "name": "Handheld Scalp Massager",
+    "category": "Health & Wellness",
+    "tagline": "Two minutes of daily head spa",
+    "price_inr": 399,
+    "compare_at_inr": 699,
+    "img": "img/p8.jpg",
+    "badges": ["New"],
+    "demo": true,
+    "description": "Soft-tipped massage nodes relax your scalp after a long day — a small daily ritual that feels like a mini head spa at home.",
+    "features": [
+      "Gentle massage nodes",
+      "Ergonomic handheld grip",
+      "Works in shower or dry",
+      "Compact & travel-friendly"
+    ]
+  }
+]

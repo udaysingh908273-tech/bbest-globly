@@ -48,8 +48,8 @@ const saveOrders = o => writeJSON('orders.json', o);
 
 // ---- AI configuration (optional; never claim live AI/research when not configured) ----
 const AI_API_KEY = process.env.AI_API_KEY || process.env.OPENAI_API_KEY || '';
-const AI_API_URL = process.env.AI_API_URL || 'https://api.openai.com/v1/chat/completions';
-const AI_MODEL = process.env.AI_MODEL || 'gpt-4.1-mini';
+const AI_API_URL = process.env.AI_API_URL || 'https://openrouter.ai/api/v1/chat/completions';
+const AI_MODEL = process.env.AI_MODEL || 'openrouter/free';
 const aiReady = !!AI_API_KEY;
 
 function normalizeProductBody(b, existingId) {

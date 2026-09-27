@@ -16,6 +16,17 @@ const ORDER_STATUSES = ['PENDING', 'CONFIRMED', 'SHIPPED', 'DELIVERED', 'CANCELL
 const RZP_KEY_ID = process.env.RAZORPAY_KEY_ID || '';
 const RZP_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
 const paymentsReady = !!(RZP_KEY_ID && RZP_KEY_SECRET);
+const loadBusinessKnowledge = () => readJSON('business_knowledge.json', {
+  brand:'BBest Globly', business_type:'Ecommerce store', markets:['India','Worldwide'],
+  catalogue_categories:['Tech','Wellness','Home','Pet'],
+  decision_rules:{require_owner_approval_for_public_product_publish:true,require_owner_approval_for_public_site_redesign:true},
+  tone:'Professional, practical, transparent about uncertainty'
+});
+const loadSiteConfig = () => readJSON('site_config.json', {
+  brand:'BBest Globly',
+  hero:{kicker:'✦ New arrivals',title:'Everyday upgrades, curated for India & the world.',subtitle:'Trending tech, wellness and home picks.'},
+  theme:{accent:'#4f46e5'}, features:{cod:true,tracking:true}
+});
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript',
   '.json': 'application/json', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -52,63 +63,102 @@ const AI_API_URL = process.env.AI_API_URL || 'https://openrouter.ai/api/v1/chat/
 const AI_MODEL = process.env.AI_MODEL || 'openrouter/free';
 const aiReady = !!AI_API_KEY;
 
-function normalizeProductBody(b, existingId) {
-  const name = String(b.name || '').trim();
-  const category = String(b.category || '').trim();
-  const price = Number(b.price_inr);
-  if (name.length < 2) throw new Error('Product name is required');
-  if (category.length < 2) throw new Error('Category is required');
-  if (!Number.isFinite(price) || price < 0) throw new Error('Invalid price');
-  const id = existingId || (name.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,48) + '-' + crypto.randomBytes(3).toString('hex'));
+async function callAI(messages, options = {}) {
+  if (!aiReady) throw new Error('AI provider is not configured. Add AI_API_KEY in Render Environment.');
+  const payload = {
+    model: options.model || AI_MODEL,
+    temperature: options.temperature ?? 0.2,
+    messages
+  };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const headers = {
+      'Content-Type':'application/json',
+      'Authorization':'Bearer '+AI_API_KEY,
+      'X-Title':'BBest Globly'
+    };
+    if (BASE_URL && !BASE_URL.includes('REPLACE-WITH-YOUR')) headers['HTTP-Referer']=BASE_URL;
+    const r = await fetch(AI_API_URL, {
+      method:'POST', headers, body:JSON.stringify(payload), signal:controller.signal
+    });
+    let d={}; try{d=await r.json()}catch{}
+    if(!r.ok) {
+      const detail = d?.error?.message || d?.message || ('HTTP '+r.status);
+      throw new Error('OpenRouter: '+detail);
+    }
+    const reply = d.choices?.[0]?.message?.content || d.output_text || '';
+    if(!reply) throw new Error('AI returned an empty response');
+    return reply;
+  } catch(e) {
+    if(e.name==='AbortError') throw new Error('AI provider timed out after 30 seconds');
+    throw e;
+  } finally { clearTimeout(timer); }
+}
+
+function safeJson(text) {
+  const raw = String(text||'').trim().replace(/^\`\`\`json\s*/i,'').replace(/^\`\`\`\s*/,'').replace(/\s*\`\`\`$/,'').trim();
+  try { return JSON.parse(raw); } catch {}
+  const a=raw.indexOf('{'), b=raw.lastIndexOf('}');
+  if(a>=0 && b>a) { try{return JSON.parse(raw.slice(a,b+1));}catch{} }
+  return null;
+}
+
+function currentAIContext(extra={}) {
   return {
-    id,
-    name,
-    category,
-    tagline: String(b.tagline || '').trim().slice(0,240),
-    price_inr: Math.round(price),
-    compare_at_inr: Math.max(0, Math.round(Number(b.compare_at_inr) || 0)),
-    img: String(b.img || '').trim().slice(0,500),
-    badges: Array.isArray(b.badges) ? b.badges.map(x=>String(x).trim()).filter(Boolean).slice(0,3) : [],
-    description: String(b.description || '').trim().slice(0,4000),
-    features: Array.isArray(b.features) ? b.features.map(x=>String(x).trim()).filter(Boolean).slice(0,20) : [],
-    sku: String(b.sku || '').trim().slice(0,80),
-    stock: Number.isFinite(Number(b.stock)) ? Math.max(0, Math.floor(Number(b.stock))) : 0,
-    demo: false,
-    updated: new Date().toISOString()
+    business_knowledge: loadBusinessKnowledge(),
+    site_config: loadSiteConfig(),
+    products: loadCatalog().map(x=>({
+      id:x.id,name:x.name,category:x.category,price_inr:x.price_inr,
+      compare_at_inr:x.compare_at_inr||0,stock:x.stock||0,tagline:x.tagline||'',description:x.description||''
+    })),
+    orders: loadOrders().map(x=>({
+      id:x.id,status:x.status,total_inr:x.totals?.total_inr||0,created:x.created,
+      items:(x.items||[]).map(i=>({id:i.id,name:i.name,qty:i.qty}))
+    })),
+    ...extra
   };
 }
 
 async function askAI(message, context = {}, task = 'general') {
-  if (!aiReady) return {
-    configured:false,
-    reply:'AI provider is not configured yet. Add AI_API_KEY (or OPENAI_API_KEY) in Render environment variables. Live market research also requires a connected live data source/API.'
-  };
   const system = [
     'You are BBest Globly AI Business Manager.',
-    'Use only the supplied business context plus your model knowledge.',
-    'Never invent orders, customers, revenue, stock, prices, trend measurements, supplier facts, ad performance or live market facts.',
-    'When live/current research data is not supplied by a connected tool/source, explicitly say it is not verified live.',
-    'Distinguish REAL DATA, AI ANALYSIS, AI RECOMMENDATION, and NEEDS OWNER APPROVAL.',
-    'High-impact business actions require owner approval; do not instruct that money was spent or a product was published unless the system confirms it.',
-    'Be concise, practical, and helpful to the BBest Globly owner.'
+    'You manage business analysis, product operations, marketing, SEO, customer support and storefront operations.',
+    'Treat the supplied business_knowledge, site_config, products and orders as authoritative store data.',
+    'Never invent live market data, supplier facts, sales, stock, ad performance or customer facts.',
+    'Clearly distinguish REAL DATA, AI ANALYSIS, AI RECOMMENDATION and NEEDS OWNER APPROVAL.',
+    'Public product publishing, deletion, major price changes, public site redesigns and paid advertising require owner approval.',
+    'Be practical and concise.'
   ].join(' ');
-  const payload = {
-    model: AI_MODEL,
-    temperature: 0.2,
-    messages: [
-      {role:'system',content:system},
-      {role:'user',content:JSON.stringify({task,message,context})}
-    ]
+  const user = JSON.stringify({task,message,context:currentAIContext(context)});
+  return {configured:true, reply:await callAI([{role:'system',content:system},{role:'user',content:user}])};
+}
+
+async function agentCommand(command) {
+  const system = [
+    'You are the BBest Globly Agentic Business Manager.',
+    'Plan concrete business actions from the owner request using ONLY supplied store data and business knowledge.',
+    'Return JSON ONLY with this exact shape:',
+    '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status","payload":{},"reason":"string","requiresApproval":true}]}',
+    'Never fabricate missing product facts. Ask for missing essential details in reply and return no action when needed.',
+    'Every action returned must have requiresApproval=true.',
+    'For add_product, payload may include name, category, tagline, price_inr, compare_at_inr, img, badges, description, features, sku, stock.',
+    'For update_product, payload must include id plus fields to update.',
+    'For delete_product, payload must include id.',
+    'For set_site_config, payload may include hero and theme fields only.',
+    'For set_order_status, payload must include id and status.'
+  ].join(' ');
+  const raw=await callAI([
+    {role:'system',content:system},
+    {role:'user',content:JSON.stringify({command,context:currentAIContext()})}
+  ],{temperature:0.1});
+  const parsed=safeJson(raw);
+  if(!parsed) return {configured:true,reply:raw,actions:[]};
+  return {
+    configured:true,
+    reply:String(parsed.reply||'Agent plan ready.'),
+    actions:Array.isArray(parsed.actions)?parsed.actions.map(a=>({...a,requiresApproval:true})).slice(0,5):[]
   };
-  const r = await fetch(AI_API_URL, {
-    method:'POST',
-    headers:{'Content-Type':'application/json','Authorization':'Bearer '+AI_API_KEY,'HTTP-Referer':BASE_URL,'X-Title':'BBest Globly'},
-    body:JSON.stringify(payload)
-  });
-  let d={}; try{d=await r.json()}catch{}
-  if(!r.ok) throw new Error((d.error&&d.error.message)||d.message||('AI provider HTTP '+r.status));
-  const reply = d.choices?.[0]?.message?.content || d.output_text || 'No AI response received.';
-  return {configured:true, reply};
 }
 
 
@@ -290,6 +340,11 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    /* ---------------- public storefront config ---------------- */
+    if (p === '/api/site/config' && req.method === 'GET') {
+      return json(res, 200, loadSiteConfig());
+    }
+
     /* ---------------- admin ---------------- */
     if (p === '/api/admin/login' && req.method === 'POST') {
       const b = await readBody(req);
@@ -343,6 +398,62 @@ const server = http.createServer(async (req, res) => {
       }
       if (p === '/api/admin/ai/status' && req.method === 'GET') {
         return json(res, 200, {configured:aiReady, model:aiReady ? AI_MODEL : null, liveResearchConfigured:!!(process.env.RESEARCH_API_URL && process.env.RESEARCH_API_KEY)});
+      }
+
+      if (p === '/api/admin/agent/command' && req.method === 'POST') {
+        const b = await readBody(req);
+        if (!String(b.command||'').trim()) return json(res,400,{error:'command is required'});
+        try { return json(res,200,await agentCommand(String(b.command))); }
+        catch(e) { return json(res,502,{configured:aiReady,error:e.message}); }
+      }
+
+      if (p === '/api/admin/agent/execute' && req.method === 'POST') {
+        const b = await readBody(req);
+        const type=String(b.type||'');
+        const payload=b.payload||{};
+        try {
+          if(type==='add_product'){
+            const catalog=loadCatalog();
+            const prod=normalizeProductBody(payload);
+            if(catalog.some(x=>x.id===prod.id||x.name.toLowerCase()===prod.name.toLowerCase())) return json(res,409,{error:'A product with this name/id already exists'});
+            catalog.push(prod); writeJSON('products.json',catalog);
+            return json(res,200,{ok:true,action:type,product:prod});
+          }
+          if(type==='update_product'){
+            if(!payload.id) return json(res,400,{error:'product id is required'});
+            const catalog=loadCatalog(), ix=catalog.findIndex(x=>x.id===payload.id);
+            if(ix<0) return json(res,404,{error:'product not found'});
+            const merged={...catalog[ix],...payload,id:catalog[ix].id,updated:new Date().toISOString()};
+            const prod=normalizeProductBody(merged,catalog[ix].id);
+            catalog[ix]=prod; writeJSON('products.json',catalog);
+            return json(res,200,{ok:true,action:type,product:prod});
+          }
+          if(type==='delete_product'){
+            if(!payload.id) return json(res,400,{error:'product id is required'});
+            const catalog=loadCatalog(), next=catalog.filter(x=>x.id!==payload.id);
+            if(next.length===catalog.length) return json(res,404,{error:'product not found'});
+            writeJSON('products.json',next); return json(res,200,{ok:true,action:type,deleted:payload.id});
+          }
+          if(type==='set_site_config'){
+            const cfg=loadSiteConfig(), next={...cfg};
+            if(payload.hero && typeof payload.hero==='object'){
+              next.hero={...cfg.hero,...payload.hero};
+              for(const k of ['kicker','title','subtitle']) next.hero[k]=String(next.hero[k]||'').slice(0,300);
+            }
+            if(payload.theme && typeof payload.theme==='object' && payload.theme.accent) next.theme={...cfg.theme,accent:String(payload.theme.accent).slice(0,30)};
+            writeJSON('site_config.json',next);
+            return json(res,200,{ok:true,action:type,site_config:next});
+          }
+          if(type==='set_order_status'){
+            const allowed=['PENDING','CONFIRMED','SHIPPED','DELIVERED','CANCELLED'];
+            if(!payload.id || !allowed.includes(payload.status)) return json(res,400,{error:'invalid order action'});
+            const orders=loadOrders(), o=orders.find(x=>x.id===payload.id);
+            if(!o) return json(res,404,{error:'order not found'});
+            o.status=payload.status; o.status_updated=new Date().toISOString(); saveOrders(orders);
+            return json(res,200,{ok:true,action:type,id:o.id,status:o.status});
+          }
+          return json(res,400,{error:'unsupported agent action'});
+        } catch(e) { return json(res,400,{error:e.message}); }
       }
 
       if (p === '/api/admin/orders' && req.method === 'GET') return json(res, 200, loadOrders().reverse());

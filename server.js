@@ -44,7 +44,7 @@ const writeJSON = (f, d) => {
   if (typeof syncJsonFile === 'function') queueMicrotask(() => syncJsonFile(f, d).catch(e => console.error('[supabase sync]', e.message)));
 };
 
-const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\\/+$/, '');
+const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const supabaseReady = !!(SUPABASE_URL && SUPABASE_SECRET_KEY);
 

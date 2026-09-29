@@ -310,17 +310,21 @@ async function createShiprocketOrder(order) {
   const d=await shiprocketRequest('orders/create/adhoc',{method:'POST',body:JSON.stringify(payload)});
   const sr=d?.order_id || d?.data?.order_id;
   const shipment=d?.shipment_id || d?.data?.shipment_id;
+  const awb=d?.awb_code || d?.data?.awb_code || null;
+  const courier=d?.courier_name || d?.data?.courier_name || null;
   const orders=loadOrders();
   const local=orders.find(x=>x.id===order.id);
   if(local){
     local.shiprocket_order_id=sr||null;
     local.shiprocket_shipment_id=shipment||null;
     local.shipping_status='ORDER_CREATED';
+    local.shiprocket_awb=awb;
+    local.shiprocket_courier=courier;
     local.fulfillment_state='SHIPROCKET_ORDER_CREATED';
     local.updated_at=new Date().toISOString();
     saveOrders(orders);
   }
-  return {shiprocket_order_id:sr||null,shipment_id:shipment||null,raw:d};
+  return {shiprocket_order_id:sr||null,shipment_id:shipment||null,awb:awb||null,courier:courier||null,raw:d};
 }
 
 // ---- AI configuration (optional; never claim live AI/research when not configured) ----
@@ -795,7 +799,25 @@ const server = http.createServer(async (req, res) => {
         if(o.status==='CANCELLED') return json(res,400,{error:'order cancelled'});
         try{
           const result=await createShiprocketOrder(o);
-          return json(res,200,{ok:true,orderId:o.id,...result});
+          const fresh=loadOrders().find(x=>x.id===id);
+          const shipmentId=fresh?.shiprocket_shipment_id || result.shipment_id;
+          let awb=result.awb||fresh?.shiprocket_awb||null;
+          let courier=fresh?.shiprocket_courier||result.courier||null;
+          if(shipmentId && !awb){
+            const awbData=await shiprocketRequest('courier/assign/awb',{method:'POST',body:JSON.stringify({shipment_id:Number(shipmentId)})});
+            awb=awbData?.response?.data?.awb_code || awbData?.awb_code || awbData?.data?.awb_code || null;
+            courier=awbData?.response?.data?.courier_name || awbData?.courier_name || awbData?.data?.courier_name || courier;
+            const latest=loadOrders(), local=latest.find(x=>x.id===id);
+            if(local){
+              local.shiprocket_awb=awb;
+              local.shiprocket_courier=courier;
+              local.shipping_status=awb?'AWB_ASSIGNED':'SHIPROCKET_ORDER_CREATED';
+              local.fulfillment_state=awb?'AWB_ASSIGNED':'SHIPROCKET_ORDER_CREATED';
+              local.updated_at=new Date().toISOString();
+              saveOrders(latest);
+            }
+          }
+          return json(res,200,{ok:true,orderId:id,shiprocket_order_id:fresh?.shiprocket_order_id||result.shiprocket_order_id,shipment_id:shipmentId,awb,courier});
         }catch(e){return json(res,502,{error:e.message});}
       }
 

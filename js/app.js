@@ -21,7 +21,53 @@ function home(){const cfg=state.siteConfig||{},hero=cfg.hero||{};meta((cfg.brand
 function drawShop(){let a=state.products.filter(p=>(shop.cat==='All'||p.category===shop.cat)&&(p.name+' '+p.category+' '+p.tagline).toLowerCase().includes(shop.q.toLowerCase()));if(shop.sort==='price-asc')a=a.slice().sort((x,y)=>x.price_inr-y.price_inr);if(shop.sort==='price-desc')a=a.slice().sort((x,y)=>y.price_inr-x.price_inr);$('#grid').innerHTML=a.length?a.map(card).join(''):'<p class="empty">No products match your search.</p>'}
 function product(id){const p=state.products.find(x=>x.id===id);if(!p)return notFound();meta(p.name+' — BBest Globly',p.tagline);$('#app').innerHTML='<section class="page"><p class="breadcrumb"><a href="/">Home</a> / <a href="/shop">Shop</a> / '+esc(p.category)+'</p><div class="pd"><div class="pd-media"><img src="'+p.img+'" alt="'+esc(p.name)+'" onerror="this.style.display=\'none\'"></div><div class="pd-info"><span class="card-cat">'+esc(p.category)+'</span><h1>'+esc(p.name)+'</h1><p class="tagline">'+esc(p.tagline)+'</p><div class="pd-price">'+money(p.price_inr)+(p.compare_at_inr?'<s>'+money(p.compare_at_inr)+'</s>':'')+'</div><p class="desc">'+esc(p.description)+'</p><ul class="features">'+(p.features||[]).map(f=>'<li>'+esc(f)+'</li>').join('')+'</ul><div class="pd-actions"><button class="btn btn-primary" onclick="add(\''+p.id+'\')">Add to Cart</button><a class="btn btn-outline" href="/cart">Go to Cart</a></div></div></div></section>'}
 function cart(){meta('Cart — BBest Globly');const ls=lines();$('#app').innerHTML='<section class="page"><h1>Your Cart</h1>'+(!ls.length?'<p class="empty">Your cart is empty. <a href="/shop" style="color:var(--accent);font-weight:700">Shop now →</a></p>':'<div class="co"><div>'+ls.map(x=>'<div class="cart-line"><img src="'+x.p.img+'" alt=""><div><a class="card-name" href="/product/'+x.p.id+'">'+esc(x.p.name)+'</a><div class="muted">'+money(x.p.price_inr)+' × '+x.i.qty+'</div><div class="qty"><button onclick="setQty(\''+x.p.id+'\','+(x.i.qty-1)+')">−</button><span>'+x.i.qty+'</span><button onclick="setQty(\''+x.p.id+'\','+(x.i.qty+1)+')">+</button></div></div><button class="link-danger" onclick="remove(\''+x.p.id+'\')">Remove</button></div>').join('')+'</div><aside class="summary"><h3>Order summary</h3><div class="sum-row"><span>Subtotal</span><strong>'+money(subtotal())+'</strong></div><div class="sum-row"><span>Shipping</span><span>Calculated at checkout</span></div><div class="sum-row total"><span>Total</span><strong>'+money(subtotal())+'</strong></div><a class="btn btn-primary btn-block" href="/checkout">Checkout</a></aside></div>')}
-function checkout(){meta('Checkout — BBest Globly');if(!lines().length)return nav('/cart');$('#app').innerHTML='<section class="page"><h1>Checkout</h1><div class="co"><div class="summary"><h3>Customer details</h3><div class="form-grid"><div><label>Name</label><input id="name"></div><div><label>Phone</label><input id="phone"></div><div class="full"><label>Email</label><input id="email" type="email"></div><div class="full"><label>Address</label><textarea id="address" rows="3"></textarea></div><div><label>City</label><input id="city"></div><div><label>State</label><input id="state"></div><div><label>Pincode</label><input id="pincode"></div><div><label>Country</label><input id="country" value="India"></div></div><h3 class="form-title">Payment</h3><div class="radio-card on"><strong>Cash on Delivery</strong><span>Pay when your order arrives</span></div><p id="coErr" class="form-err"></p><button id="place" class="btn btn-primary btn-block">Place COD Order · '+money(subtotal())+'</button></div><aside class="summary"><h3>Items</h3>'+lines().map(x=>'<div class="sum-row"><span>'+esc(x.p.name)+' ×'+x.i.qty+'</span><strong>'+money(x.p.price_inr*x.i.qty)+'</strong></div>').join('')+'<div class="sum-row total"><span>Total</span><strong>'+money(subtotal())+'</strong></div></aside></div></section>';$('#place').onclick=async()=>{const b={name:$('#name').value,phone:$('#phone').value,email:$('#email').value,address:$('#address').value,city:$('#city').value,state:$('#state').value,pincode:$('#pincode').value,country:$('#country').value,payment_method:'cod',items:lines().map(x=>({id:x.p.id,qty:x.i.qty}))};try{const d=await api('/api/orders',{method:'POST',body:b});state.cart=[];saveCart();nav('/order/'+d.orderId)}catch(e){$('#coErr').textContent=e.message}}}
+function checkout(){
+  meta('Checkout — BBest Globly');
+  if(!lines().length)return nav('/cart');
+  let payCfg={razorpay:{enabled:false}};
+  try{payCfg=await api('/api/payment/config')}catch{}
+  const onlineEnabled=!!payCfg.razorpay?.enabled;
+  const paymentOptions='<label class="radio-card '+(!onlineEnabled?'on':'')+'"><input type="radio" name="pay" value="cod" checked><strong>Cash on Delivery</strong><span>Pay when your order arrives</span></label>'+
+    (onlineEnabled?'<label class="radio-card"><input type="radio" name="pay" value="online"><strong>UPI / Card / Netbanking</strong><span>Secure online payment via Razorpay</span></label>':'<div class="notice">Online payment is not enabled yet. COD is available.</div>');
+  $('#app').innerHTML='<section class="page"><h1>Checkout</h1><div class="co"><div class="summary"><h3>Customer details</h3><div class="form-grid"><div><label>Name</label><input id="name"></div><div><label>Phone</label><input id="phone" inputmode="tel"></div><div class="full"><label>Email</label><input id="email" type="email"></div><div class="full"><label>Address</label><textarea id="address" rows="3"></textarea></div><div><label>City</label><input id="city"></div><div><label>State</label><input id="state"></div><div><label>Pincode</label><input id="pincode" inputmode="numeric"></div><div><label>Country</label><input id="country" value="India"></div></div><h3 class="form-title">Payment</h3><div class="payment-options">'+paymentOptions+'</div><p id="coErr" class="form-err"></p><button id="place" class="btn btn-primary btn-block">Place COD Order · '+money(subtotal())+'</button></div><aside class="summary"><h3>Items</h3>'+lines().map(x=>'<div class="sum-row"><span>'+esc(x.p.name)+' ×'+x.i.qty+'</span><strong>'+money(x.p.price_inr*x.i.qty)+'</strong></div>').join('')+'<div class="sum-row total"><span>Total</span><strong>'+money(subtotal())+'</strong></div></aside></div></section>';
+  $$('input[name="pay"]').forEach(r=>r.onchange=()=>{$('#place').textContent=r.checked&&r.value==='online'?'Pay securely · '+money(subtotal()):'Place COD Order · '+money(subtotal())});
+  $('#place').onclick=async()=>{
+    const b={name:$('#name').value,phone:$('#phone').value,email:$('#email').value,address:$('#address').value,city:$('#city').value,state:$('#state').value,pincode:$('#pincode').value,country:$('#country').value,payment_method:document.querySelector('input[name="pay"]:checked')?.value||'cod',items:lines().map(x=>({id:x.p.id,qty:x.i.qty}))};
+    const err=$('#coErr'); err.textContent='';
+    try{
+      const d=await api('/api/orders',{method:'POST',body:b});
+      if(b.payment_method!=='online'){state.cart=[];saveCart();return nav('/order/'+d.orderId)}
+      const gateway=await api('/api/payment/order',{method:'POST',body:{orderId:d.orderId}});
+      await loadRazorpay();
+      const checkoutOptions={
+        key:payCfg.razorpay.key_id,
+        amount:gateway.amount,
+        currency:gateway.currency,
+        name:'BBest Globly',
+        description:'Order '+d.orderId,
+        order_id:gateway.razorpay_order_id,
+        prefill:{name:b.name,email:b.email,contact:b.phone},
+        theme:{color:getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()||'#4f46e5'},
+        handler:async response=>{
+          try{
+            await api('/api/payment/verify',{method:'POST',body:{orderId:d.orderId,...response}});
+            state.cart=[];saveCart();nav('/order/'+d.orderId);
+          }catch(e){err.textContent=e.message}
+        },
+        modal:{ondismiss:()=>{err.textContent='Payment cancelled. Your order remains pending until payment succeeds.'}}
+      };
+      new window.Razorpay(checkoutOptions).open();
+    }catch(e){err.textContent=e.message}
+  };
+}
+function loadRazorpay(){
+  return new Promise((resolve,reject)=>{
+    if(window.Razorpay)return resolve();
+    const s=document.createElement('script');
+    s.src='https://checkout.razorpay.com/v1/checkout.js';
+    s.onload=resolve;s.onerror=()=>reject(new Error('Unable to load Razorpay checkout'));document.head.appendChild(s);
+  });
+}
 async function order(id){meta('Order '+id+' — BBest Globly');$('#app').innerHTML='<section class="page"><p class="empty">Loading order…</p></section>';try{const o=await api('/api/order/'+id);$('#app').innerHTML='<section class="page"><div class="success-box"><h1>Order placed 🎉</h1><p>Your order ID</p><div class="order-id">'+esc(o.id)+'</div><p><span class="status-pill">'+esc(o.status)+'</span></p><p>Total: <strong>₹'+Number(o.totals.total_inr).toLocaleString('en-IN')+'</strong></p><a class="btn btn-primary" href="/track">Track order</a></div></section>'}catch(e){notFound()}}
 async function track(){meta('Track Order — BBest Globly');$('#app').innerHTML='<section class="page"><div class="auth-card"><h1>Track your order</h1><p class="sub">Enter your BBest Globly order ID.</p><div class="field"><label>Order ID</label><input id="oid" placeholder="BG-..."></div><p id="terr" class="form-err"></p><button id="tb" class="btn btn-primary btn-block">Track</button></div></section>';$('#tb').onclick=async()=>{try{const o=await api('/api/order/'+encodeURIComponent($('#oid').value.trim()));$('#terr').textContent='';$('#app').innerHTML='<section class="page"><div class="success-box"><h1>Order '+esc(o.id)+'</h1><p><span class="status-pill">'+esc(o.status)+'</span></p><p>Total ₹'+Number(o.totals.total_inr).toLocaleString('en-IN')+'</p></div></section>'}catch(e){$('#terr').textContent=e.message}}}
 function login(){authForm(false)}

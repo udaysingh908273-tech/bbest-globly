@@ -66,6 +66,10 @@ function normalizeProductBody(b, idOverride) {
     features,
     sku: String(body.sku || '').trim().slice(0, 80) || null,
     stock: Math.max(0, Math.floor(Number(body.stock ?? 0))),
+    weight_kg: Math.max(0.01, Number(body.weight_kg ?? 0.5)),
+    length_cm: Math.max(1, Number(body.length_cm ?? 10)),
+    breadth_cm: Math.max(1, Number(body.breadth_cm ?? 10)),
+    height_cm: Math.max(1, Number(body.height_cm ?? 10)),
     published: body.published !== false,
     updated: new Date().toISOString()
   };
@@ -142,7 +146,7 @@ async function syncJsonFile(file, data) {
       id:x.id,name:x.name,category:x.category||'',tagline:x.tagline||'',
       price_inr:Number(x.price_inr||0),compare_at_inr:Number(x.compare_at_inr||0),
       img:x.img||'',badges:x.badges||[],demo:!!x.demo,description:x.description||'',
-      features:x.features||[],sku:x.sku||null,stock:Number(x.stock??100),published:x.published!==false,updated_at:new Date().toISOString()
+      features:x.features||[],sku:x.sku||null,stock:Number(x.stock??100),weight_kg:Number(x.weight_kg??0.5),length_cm:Number(x.length_cm??10),breadth_cm:Number(x.breadth_cm??10),height_cm:Number(x.height_cm??10),published:x.published!==false,updated_at:new Date().toISOString()
     }));
     await supabaseRequest('products?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(rows)});
   } else if (file === 'orders.json') {
@@ -193,9 +197,131 @@ function readBody(req) {
     req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch (e) { reject(new Error('invalid JSON')); } });
   });
 }
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    let b = '';
+    req.on('data', c => { b += c; if (b.length > 2e6) { reject(new Error('payload too large')); req.destroy(); } });
+    req.on('end', () => resolve(b));
+  });
+}
+
 const loadCatalog = () => readJSON('products.json', []);
 const loadOrders = () => readJSON('orders.json', []);
 const saveOrders = o => writeJSON('orders.json', o);
+
+const RZP_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
+const SHIPROCKET_EMAIL = process.env.SHIPROCKET_EMAIL || '';
+const SHIPROCKET_PASSWORD = process.env.SHIPROCKET_PASSWORD || '';
+const SHIPROCKET_PICKUP_LOCATION = process.env.SHIPROCKET_PICKUP_LOCATION || '';
+const SHIPROCKET_AUTO_FULFILL = String(process.env.SHIPROCKET_AUTO_FULFILL || 'false').toLowerCase() === 'true';
+let shiprocketToken = '';
+let shiprocketTokenExpiresAt = 0;
+
+async function shiprocketRequest(pathname, options = {}) {
+  if (!SHIPROCKET_EMAIL || !SHIPROCKET_PASSWORD || !SHIPROCKET_PICKUP_LOCATION) {
+    throw new Error('Shiprocket is not configured. Add SHIPROCKET_EMAIL, SHIPROCKET_PASSWORD and SHIPROCKET_PICKUP_LOCATION.');
+  }
+  if (!shiprocketToken || Date.now() >= shiprocketTokenExpiresAt) {
+    const authRes = await fetch('https://apiv2.shiprocket.in/v1/external/auth/login', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email:SHIPROCKET_EMAIL,password:SHIPROCKET_PASSWORD})
+    });
+    let authData={}; try{authData=await authRes.json()}catch{}
+    if(!authRes.ok || !authData.token) throw new Error('Shiprocket authentication failed');
+    shiprocketToken=authData.token;
+    shiprocketTokenExpiresAt=Date.now()+8*24*60*60*1000;
+  }
+  const r=await fetch('https://apiv2.shiprocket.in/v1/external/'+pathname,{
+    ...options,
+    headers:{
+      'Content-Type':'application/json',
+      'Authorization':'Bearer '+shiprocketToken,
+      ...(options.headers||{})
+    }
+  });
+  const text=await r.text();
+  let data=null; try{data=text?JSON.parse(text):null}catch{}
+  if(!r.ok) throw new Error('Shiprocket '+r.status+': '+(data?.message || data?.errors ? JSON.stringify(data.errors||data.message) : text || 'request failed'));
+  return data;
+}
+
+function orderPackage(order) {
+  let weight=0.5, length=10, breadth=10, height=10;
+  let totalUnits=0;
+  for(const item of order.items||[]) {
+    const p=loadCatalog().find(x=>x.id===item.id);
+    const qty=Math.max(1,Number(item.qty)||1);
+    totalUnits+=qty;
+    if(p){
+      weight += Math.max(0.01,Number(p.weight_kg)||0.5)*qty;
+      length=Math.max(length,Number(p.length_cm)||10);
+      breadth=Math.max(breadth,Number(p.breadth_cm)||10);
+      height=Math.max(height,Number(p.height_cm)||10);
+    }
+  }
+  return {weight:Math.max(0.5,Number(weight.toFixed(3))),length,breadth,height,totalUnits};
+}
+
+async function createShiprocketOrder(order) {
+  if(order.shiprocket_order_id) return {alreadyCreated:true,shiprocket_order_id:order.shiprocket_order_id,shipment_id:order.shiprocket_shipment_id,awb:order.shiprocket_awb};
+  const pkg=orderPackage(order);
+  const payload={
+    order_id:order.id.slice(0,20),
+    order_date:new Date(order.created||Date.now()).toISOString().slice(0,10),
+    pickup_location:SHIPROCKET_PICKUP_LOCATION,
+    billing_customer_name:order.customer?.name||'Customer',
+    billing_last_name:'',
+    billing_address:order.shipping?.address||'',
+    billing_address_2:'',
+    billing_city:order.shipping?.city||'',
+    billing_pincode:order.shipping?.pincode||'',
+    billing_state:order.shipping?.state||'',
+    billing_country:order.shipping?.country||'India',
+    billing_email:order.customer?.email||'',
+    billing_phone:order.customer?.phone||'',
+    shipping_is_billing:true,
+    shipping_customer_name:order.customer?.name||'Customer',
+    shipping_last_name:'',
+    shipping_address:order.shipping?.address||'',
+    shipping_address_2:'',
+    shipping_city:order.shipping?.city||'',
+    shipping_pincode:order.shipping?.pincode||'',
+    shipping_country:order.shipping?.country||'India',
+    shipping_state:order.shipping?.state||'',
+    shipping_email:order.customer?.email||'',
+    shipping_phone:order.customer?.phone||'',
+    order_items:(order.items||[]).map(i=>({
+      name:i.name||'Product',
+      sku:String(i.id||'SKU').slice(0,50),
+      units:String(i.qty||1),
+      selling_price:Number(i.price_inr||0),
+      discount:'',
+      tax:'',
+      hsn:''
+    })),
+    payment_method:order.payment?.method?.includes('Razorpay')?'Prepaid':'COD',
+    sub_total:Number(order.totals?.subtotal_inr||0),
+    length:String(pkg.length),
+    breadth:String(pkg.breadth),
+    height:String(pkg.height),
+    weight:String(pkg.weight)
+  };
+  const d=await shiprocketRequest('orders/create/adhoc',{method:'POST',body:JSON.stringify(payload)});
+  const sr=d?.order_id || d?.data?.order_id;
+  const shipment=d?.shipment_id || d?.data?.shipment_id;
+  const orders=loadOrders();
+  const local=orders.find(x=>x.id===order.id);
+  if(local){
+    local.shiprocket_order_id=sr||null;
+    local.shiprocket_shipment_id=shipment||null;
+    local.shipping_status='ORDER_CREATED';
+    local.fulfillment_state='SHIPROCKET_ORDER_CREATED';
+    local.updated_at=new Date().toISOString();
+    saveOrders(orders);
+  }
+  return {shiprocket_order_id:sr||null,shipment_id:shipment||null,raw:d};
+}
 
 // ---- AI configuration (optional; never claim live AI/research when not configured) ----
 const AI_API_KEY = process.env.AI_API_KEY || process.env.OPENAI_API_KEY || '';
@@ -350,7 +476,7 @@ const server = http.createServer(async (req, res) => {
   let p;
   try { p = decodeURIComponent(url.pathname); } catch (e) { return json(res, 400, { error: 'bad path' }); }
   try {
-    if (p === '/api/health') return json(res, 200, { ok: true, service: 'bbest-globly-store', version: 2.2, persistence: supabaseReady ? 'supabase' : 'local', uptime: process.uptime() | 0, time: new Date().toISOString() });
+    if (p === '/api/health') return json(res, 200, { ok: true, service: 'bbest-globly-store', version: 2.3, persistence: supabaseReady ? 'supabase' : 'local', uptime: process.uptime() | 0, time: new Date().toISOString() });
 
     if (p === '/sitemap.xml' && req.method === 'GET') {
       const urls = ['', '/shop', '/track'].concat(loadCatalog().filter(x => x.published !== false).map(x => '/product/' + x.id));
@@ -498,6 +624,31 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, loadSiteConfig());
     }
 
+    /* ---------------- Razorpay webhook ---------------- */
+    if (p === '/api/payment/webhook' && req.method === 'POST') {
+      const raw=await readRawBody(req);
+      if(!RZP_WEBHOOK_SECRET) return json(res,503,{error:'Razorpay webhook secret not configured'});
+      const received=req.headers['x-razorpay-signature'] || '';
+      const expected=crypto.createHmac('sha256',RZP_WEBHOOK_SECRET).update(raw).digest('hex');
+      const a=Buffer.from(String(received)); const bbuf=Buffer.from(expected);
+      if(a.length!==bbuf.length || !crypto.timingSafeEqual(a,bbuf)) return json(res,400,{error:'invalid webhook signature'});
+      let event={}; try{event=JSON.parse(raw)}catch{return json(res,400,{error:'invalid webhook JSON'})};
+      const payment=event.payload?.payment?.entity;
+      const gatewayOrderId=payment?.order_id;
+      const orders=loadOrders();
+      const o=orders.find(x=>x.razorpay_order_id===gatewayOrderId);
+      if(o && ['payment.captured','order.paid'].includes(String(event.event||''))){
+        o.razorpay_payment_id=payment?.id||o.razorpay_payment_id;
+        o.payment={...(o.payment||{}),method:'UPI/Card (Razorpay)',paid:true,payment_id:o.razorpay_payment_id,paid_at:new Date().toISOString()};
+        if(o.status!=='CANCELLED') o.status='CONFIRMED';
+        o.fulfillment_state='READY_FOR_FULFILLMENT';
+        o.updated_at=new Date().toISOString();
+        saveOrders(orders);
+        if(SHIPROCKET_AUTO_FULFILL){try{await createShiprocketOrder(o)}catch(e){console.error('[shiprocket webhook fulfill]',e.message)}}
+      }
+      return json(res,200,{ok:true});
+    }
+
     /* ---------------- admin ---------------- */
     if (p === '/api/admin/login' && req.method === 'POST') {
       const b = await readBody(req);
@@ -637,6 +788,17 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
+      if (p.startsWith('/api/admin/fulfillment/ship/') && req.method === 'POST') {
+        const id=decodeURIComponent(p.slice('/api/admin/fulfillment/ship/'.length));
+        const orders=loadOrders(); const o=orders.find(x=>x.id===id);
+        if(!o) return json(res,404,{error:'order not found'});
+        if(o.status==='CANCELLED') return json(res,400,{error:'order cancelled'});
+        try{
+          const result=await createShiprocketOrder(o);
+          return json(res,200,{ok:true,orderId:o.id,...result});
+        }catch(e){return json(res,502,{error:e.message});}
+      }
+
       if (p === '/api/admin/orders' && req.method === 'GET') return json(res, 200, loadOrders().reverse());
       if (p === '/api/admin/stats' && req.method === 'GET') {
         const orders = loadOrders();
@@ -664,7 +826,7 @@ const server = http.createServer(async (req, res) => {
 
     /* ---------------- payments (Razorpay-ready — activates via env keys) ---------------- */
     if (p === '/api/payment/config' && req.method === 'GET') {
-      return json(res, 200, { razorpay: { enabled: paymentsReady, key_id: paymentsReady ? RZP_KEY_ID : null } });
+      return json(res, 200, { razorpay: { enabled: paymentsReady, key_id: paymentsReady ? RZP_KEY_ID : null }, shiprocket: { enabled: !!(SHIPROCKET_EMAIL&&SHIPROCKET_PASSWORD&&SHIPROCKET_PICKUP_LOCATION), autoFulfill: SHIPROCKET_AUTO_FULFILL } });
     }
     if (p === '/api/payment/order' && req.method === 'POST') {
       if (!paymentsReady) return json(res, 503, { error: 'payment gateway not configured (set RAZORPAY_KEY_ID & RAZORPAY_KEY_SECRET)' });
@@ -680,6 +842,7 @@ const server = http.createServer(async (req, res) => {
         });
         const d = await r.json();
         if (!r.ok) return json(res, 502, { error: (d && d.error && d.error.description) || 'gateway error' });
+        const localOrders=loadOrders(); const local=localOrders.find(x=>x.id===o.id); if(local){local.razorpay_order_id=d.id;local.status='AWAITING_PAYMENT';local.updated_at=new Date().toISOString();saveOrders(localOrders);}
         console.log('[payment] gateway order created for', o.id);
         return json(res, 200, { ok: true, razorpay_order_id: d.id, amount: d.amount, currency: 'INR' });
       } catch (e) { return json(res, 502, { error: 'gateway unreachable' }); }
@@ -692,9 +855,11 @@ const server = http.createServer(async (req, res) => {
       const orders = loadOrders();
       const o = orders.find(x => x.id === b.orderId);
       if (!o) return json(res, 404, { error: 'order not found' });
+      if (o.razorpay_order_id && o.razorpay_order_id !== String(b.razorpay_order_id)) return json(res, 400, { error: 'Razorpay order mismatch' });
       o.payment = { method: 'UPI/Card (Razorpay)', paid: true, payment_id: b.razorpay_payment_id, paid_at: new Date().toISOString() };
-      if (o.status === 'PENDING') o.status = 'CONFIRMED';
+      o.razorpay_payment_id=String(b.razorpay_payment_id); o.status = 'CONFIRMED'; o.fulfillment_state='READY_FOR_FULFILLMENT'; o.updated_at=new Date().toISOString();
       saveOrders(orders);
+      if(SHIPROCKET_AUTO_FULFILL){ try{await createShiprocketOrder(o);}catch(e){console.error('[shiprocket auto fulfill]',e.message);} }
       console.log('[payment] verified:', o.id);
       return json(res, 200, { ok: true });
     }

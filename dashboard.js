@@ -8,18 +8,24 @@ function render(){if(!token)return;if(currentView==='overview')overview();if(cur
 function overview(){const revenue=orders.filter(o=>o.status!=='CANCELLED').reduce((s,o)=>s+Number(o.totals?.total_inr||0),0),pending=orders.filter(o=>o.status==='PENDING').length;$('#overview').innerHTML='<div class="grid stats"><div class="stat"><div class="label">Orders</div><div class="value">'+orders.length+'</div></div><div class="stat"><div class="label">Revenue</div><div class="value">'+money(revenue)+'</div></div><div class="stat"><div class="label">Pending</div><div class="value">'+pending+'</div></div><div class="stat"><div class="label">Products</div><div class="value">'+products.length+'</div></div></div><div class="section-card"><div class="section-head"><h2>Store Overview</h2><span class="badge">AI Manager on the right →</span></div><p class="muted">Your main dashboard stays clean. Open the AI Manager from the right side whenever you need it.</p></div><div class="section-card"><div class="section-head"><h2>Quick actions</h2></div><div class="actions"><button class="btn soft" data-go="products">Add product</button><button class="btn soft" data-go="research">Research products</button><button class="btn soft" data-go="marketing">Create campaign</button><button class="btn soft" data-go="seo">SEO audit</button></div></div>';$('[data-go="products"]').onclick=()=>setView('products');$('[data-go="research"]').onclick=()=>setView('research');$('[data-go="marketing"]').onclick=()=>setView('marketing');$('[data-go="seo"]').onclick=()=>setView('seo')}function renderAgentActions(actions){
   const box=$('#aiHistory'); if(!box) return;
   const cards=(actions||[]).map((a,i)=>{
-    const safe=JSON.stringify(a.payload||{}).replace(/</g,'\\u003c');
-    return '<div class="agent-action" id="agentAction'+i+'"><strong>Agent action</strong><div class="agent-type">'+esc(a.type||'action')+'</div><div class="muted">'+esc(a.reason||'Owner approval required')+'</div><pre>'+esc(JSON.stringify(a.payload||{},null,2))+'</pre><button class="btn primary agent-approve" data-index="'+i+'">Approve & Execute</button></div>';
+    return '<div class="agent-action" id="agentAction'+i+'"><strong>Approval required</strong><div class="agent-type">'+esc(a.type||'action')+'</div><div class="muted">'+esc(a.reason||'Owner approval required')+'</div><pre>'+esc(JSON.stringify(a.payload||{},null,2))+'</pre><div class="actions"><button class="btn primary agent-approve" data-index="'+i+'">Approve & Execute</button><button class="btn danger agent-reject" data-index="'+i+'">Reject</button></div></div>';
   }).join('');
   box.insertAdjacentHTML('beforeend',cards);
   $('#aiHistory .agent-approve').forEach(btn=>btn.onclick=async()=>{
     const idx=Number(btn.dataset.index), action=actions[idx]; btn.disabled=true; btn.textContent='Executing…';
     try{
-      const d=await api('/api/admin/agent/execute',{method:'POST',body:{type:action.type,payload:action.payload}});
+      const d=await api('/api/admin/agent/execute',{method:'POST',body:{approval_id:action.approvalId}});
       btn.textContent='Done ✓'; btn.classList.remove('primary'); btn.classList.add('soft');
       aiHistory.push({role:'assistant',content:'Executed '+action.type+' successfully.'});
       await refresh(); setView(currentView);
     }catch(e){btn.disabled=false;btn.textContent='Approve & Execute';alert(e.message)}
+  });
+  $('#aiHistory .agent-reject').forEach(btn=>btn.onclick=async()=>{
+    const idx=Number(btn.dataset.index), action=actions[idx]; btn.disabled=true; btn.textContent='Rejecting…';
+    try{
+      await api('/api/admin/approvals/'+encodeURIComponent(action.approvalId)+'/reject',{method:'POST'});
+      btn.textContent='Rejected ✓'; btn.classList.remove('danger'); btn.classList.add('soft');
+    }catch(e){btn.disabled=false;btn.textContent='Reject';alert(e.message)}
   });
 }
 async function runAgent(command){
@@ -73,7 +79,30 @@ function researchView(){$('#research').innerHTML='<div class="ai-box"><h2>🔎 A
 function marketingView(){const seasons=['Diwali','Holi','Eid','Christmas','New Year','Summer','Monsoon','Winter'];$('#marketing').innerHTML='<div class="section-card"><div class="section-head"><div><h2>AI Marketing Manager</h2><div class="muted">Prepare campaigns using season, festivals, trends and actual products.</div></div></div><div class="toolbar"><select id="season">'+seasons.map(x=>'<option>'+x+'</option>').join('')+'</select><button class="btn primary" id="mk">Prepare campaign</button></div><div id="mkout" class="ai-output">Select an occasion and generate a draft.</div></div>';$('#mk').onclick=async()=>{const o=$('#mkout');o.textContent='Preparing…';try{const d=await api('/api/ai/chat',{method:'POST',body:{message:'Prepare a marketing campaign draft for '+$('#season').value+' using actual BBest Globly products and clearly label assumptions.',task:'marketing',context:{products,orders}}});o.textContent=d.reply||'No result'}catch(e){o.textContent='AI not configured: '+e.message}}}
 function seoView(){const opts=products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('');$('#seo').innerHTML='<div class="ai-box"><h2>🧠 AI SEO Manager</h2><p>Generate SEO drafts from real product data.</p><select id="seoP" class="command" style="color:#111">'+opts+'</select><button id="seoBtn" class="btn primary">Generate SEO</button><div id="seoOut" class="ai-output">Ready.</div></div>';$('#seoBtn').onclick=async()=>{const p=products.find(x=>x.id===$('#seoP').value),o=$('#seoOut');o.textContent='Generating…';try{const d=await api('/api/ai/chat',{method:'POST',body:{message:'Create SEO title, meta description, slug, keywords and FAQ for this product. Product: '+JSON.stringify(p),task:'seo',context:{product:p}}});o.textContent=d.reply||'No result'}catch(e){o.textContent='AI not configured: '+e.message}}}
 function supportView(){$('#support').innerHTML='<div class="section-card"><h2>Customer Support</h2><p class="muted">Central support is ready for website/app/WhatsApp integration once official messaging credentials are configured.</p><div class="notice">WhatsApp Business API and live human inbox require official provider credentials.</div></div>'}
-function approvalView(){$('#approvals').innerHTML='<div class="section-card"><div class="section-head"><h2>Approval Center</h2><span class="badge">Owner control</span></div><p class="muted">Sensitive AI actions such as product publishing, major pricing changes and paid advertising should pass through owner approval.</p><div class="notice">Full persisted approval workflow is part of the database/AI foundation phase.</div></div>'}
+async function approvalView(){
+  $('#approvals').innerHTML='<div class="section-card"><div class="section-head"><div><h2>Approval Center</h2><div class="muted">Persistent owner approvals stored in Supabase.</div></div><button class="btn soft" id="refreshApprovals">Refresh</button></div><div id="approvalList" class="approval-list">Loading…</div></div>';
+  async function load(){
+    const box=$('#approvalList');
+    try{
+      const rows=await api('/api/admin/approvals');
+      if(!rows.length){box.innerHTML='<div class="notice">No approval requests yet.</div>';return;}
+      box.innerHTML=rows.map(r=>{
+        const pending=r.status==='PENDING';
+        return '<div class="agent-action"><div class="section-head"><strong>'+esc(r.action_type)+'</strong><span class="badge">'+esc(r.status)+'</span></div><div class="muted">'+esc(r.reason||'Owner approval required')+'</div><pre>'+esc(JSON.stringify(r.payload||{},null,2))+'</pre><div class="actions">'+(pending?'<button class="btn primary approve-row" data-id="'+esc(r.id)+'">Approve & Execute</button><button class="btn danger reject-row" data-id="'+esc(r.id)+'">Reject</button>':'')+'</div></div>';
+      }).join('');
+      $('.approve-row',box).forEach(btn=>btn.onclick=async()=>{
+        btn.disabled=true;btn.textContent='Executing…';
+        try{await api('/api/admin/agent/execute',{method:'POST',body:{approval_id:btn.dataset.id}});await load();await refresh();setView(currentView)}catch(e){btn.disabled=false;btn.textContent='Approve & Execute';alert(e.message)}
+      });
+      $('.reject-row',box).forEach(btn=>btn.onclick=async()=>{
+        btn.disabled=true;btn.textContent='Rejecting…';
+        try{await api('/api/admin/approvals/'+encodeURIComponent(btn.dataset.id)+'/reject',{method:'POST'});await load()}catch(e){btn.disabled=false;btn.textContent='Reject';alert(e.message)}
+      });
+    }catch(e){box.innerHTML='<div class="notice">Approval Center error: '+esc(e.message)+'</div>'}
+  }
+  $('#refreshApprovals').onclick=load;
+  await load();
+}
 function initAISidePanel(){
   const panel=$('#aiSidePanel'),toggle=$('#aiSideToggle'),close=$('#aiSideClose'),backdrop=$('#aiSideBackdrop');
   const open=()=>{panel.classList.add('open');backdrop.classList.add('open');$('#aiCommand').focus()};

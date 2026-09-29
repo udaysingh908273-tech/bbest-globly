@@ -68,8 +68,25 @@ function loadRazorpay(){
     s.onload=resolve;s.onerror=()=>reject(new Error('Unable to load Razorpay checkout'));document.head.appendChild(s);
   });
 }
-async function order(id){meta('Order '+id+' — BBest Globly');$('#app').innerHTML='<section class="page"><p class="empty">Loading order…</p></section>';try{const o=await api('/api/order/'+id);$('#app').innerHTML='<section class="page"><div class="success-box"><h1>Order placed 🎉</h1><p>Your order ID</p><div class="order-id">'+esc(o.id)+'</div><p><span class="status-pill">'+esc(o.status)+'</span></p><p>Total: <strong>₹'+Number(o.totals.total_inr).toLocaleString('en-IN')+'</strong></p><a class="btn btn-primary" href="/track">Track order</a></div></section>'}catch(e){notFound()}}
-async function track(){meta('Track Order — BBest Globly');$('#app').innerHTML='<section class="page"><div class="auth-card"><h1>Track your order</h1><p class="sub">Enter your BBest Globly order ID.</p><div class="field"><label>Order ID</label><input id="oid" placeholder="BG-..."></div><p id="terr" class="form-err"></p><button id="tb" class="btn btn-primary btn-block">Track</button></div></section>';$('#tb').onclick=async()=>{try{const o=await api('/api/order/'+encodeURIComponent($('#oid').value.trim()));$('#terr').textContent='';$('#app').innerHTML='<section class="page"><div class="success-box"><h1>Order '+esc(o.id)+'</h1><p><span class="status-pill">'+esc(o.status)+'</span></p><p>Total ₹'+Number(o.totals.total_inr).toLocaleString('en-IN')+'</p></div></section>'}catch(e){$('#terr').textContent=e.message}}}
+async function order(id){
+  meta('Order '+id+' — BBest Globly');
+  $('#app').innerHTML='<section class="page"><p class="empty">Loading order…</p></section>';
+  try{
+    const o=await api('/api/order/'+id);
+    const ship=o.shiprocket_awb?'<p><strong>AWB:</strong> '+esc(o.shiprocket_awb)+(o.shiprocket_courier?' · '+esc(o.shiprocket_courier):'')+'</p><p><span class="status-pill">'+esc(o.shipping_status||'SHIPPING')+'</span></p>':'';
+    $('#app').innerHTML='<section class="page"><div class="success-box"><h1>Order placed 🎉</h1><p>Your order ID</p><div class="order-id">'+esc(o.id)+'</div><p><span class="status-pill">'+esc(o.status)+'</span></p><p>Total: <strong>₹'+Number(o.totals.total_inr).toLocaleString('en-IN')+'</strong></p>'+ship+'<a class="btn btn-primary" href="/track">Track order</a></div></section>';
+  }catch(e){notFound()}
+}async function track(){
+  meta('Track Order — BBest Globly');
+  $('#app').innerHTML='<section class="page"><div class="auth-card"><h1>Track your order</h1><p class="sub">Enter your BBest Globly order ID.</p><div class="field"><label>Order ID</label><input id="oid" placeholder="BG-..."></div><p id="terr" class="form-err"></p><button id="tb" class="btn btn-primary btn-block">Track</button></div></section>';
+  $('#tb').onclick=async()=>{
+    try{
+      const o=await api('/api/order/'+encodeURIComponent($('#oid').value.trim())); $('#terr').textContent='';
+      const ship=o.shiprocket_awb?'<p><strong>AWB:</strong> '+esc(o.shiprocket_awb)+(o.shiprocket_courier?' · '+esc(o.shiprocket_courier):'')+'</p><p><span class="status-pill">'+esc(o.shipping_status||'Shipping')+'</span></p>':'<p class="muted">Shipment details will appear after dispatch.</p>';
+      $('#app').innerHTML='<section class="page"><div class="success-box"><h1>Order '+esc(o.id)+'</h1><p><span class="status-pill">'+esc(o.status)+'</span></p><p>Total ₹'+Number(o.totals.total_inr).toLocaleString('en-IN')+'</p>'+ship+'</div></section>';
+    }catch(e){$('#terr').textContent=e.message}
+  }
+}
 function login(){authForm(false)}
 function register(){authForm(true)}
 function authForm(reg){meta(reg?'Create Account — BBest Globly':'Login — BBest Globly');$('#app').innerHTML='<section class="page"><div class="auth-card"><h1>'+(reg?'Create your account':'Welcome back')+'</h1><p class="sub">'+(reg?'Track orders and checkout faster.':'Log in to your BBest Globly account.')+'</p>'+(reg?'<div class="field"><label>Name</label><input id="nm"></div>':'')+(reg?'<div class="field"><label>Phone</label><input id="ph"></div>':'')+'<div class="field"><label>Email</label><input id="em" type="email"></div><div class="field"><label>Password</label><input id="pw" type="password"></div><p id="aerr" class="form-err"></p><button id="ab" class="btn btn-primary btn-block">'+(reg?'Create account':'Login')+'</button><p class="auth-link">'+(reg?'Already have an account? <a href="/login">Login</a>':'New here? <a href="/register">Create an account</a>')+'</p></div></section>';$('#ab').onclick=async()=>{try{const body=reg?{name:$('#nm').value,phone:$('#ph').value,email:$('#em').value,password:$('#pw').value}:{email:$('#em').value,password:$('#pw').value};const d=await api(reg?'/api/auth/register':'/api/auth/login',{method:'POST',body});state.token=d.token;state.user=d.customer;localStorage.setItem('bg_token',state.token);nav('/account')}catch(e){$('#aerr').textContent=e.message}}}

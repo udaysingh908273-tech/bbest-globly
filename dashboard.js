@@ -1,5 +1,7 @@
 const $=(s,e=document)=>e.querySelector(s), $$=(s,e=document)=>[...e.querySelectorAll(s)];
-let token=localStorage.getItem('bg_admin')||'',products=[],orders=[],currentView='overview',aiHistory=[];
+let token=localStorage.getItem('bg_admin')||'',products=[],orders=[],currentView='overview',aiHistory=JSON.parse(sessionStorage.getItem('bg_ai_history')||'[]');
+function saveAIHistory(){aiHistory=aiHistory.slice(-30);sessionStorage.setItem('bg_ai_history',JSON.stringify(aiHistory));}
+function renderAIHistory(){const box=$('#aiHistory');if(!box)return;box.innerHTML=aiHistory.map(m=>'<div class="ai-message '+esc(m.role)+'"><strong>'+esc(m.role==='user'?'You':'AI')+'</strong><div>'+esc(m.content)+'</div></div>').join('');box.scrollTop=box.scrollHeight;}
 async function api(path,opt={}){const headers={};if(opt.body)headers['Content-Type']='application/json';if(token)headers.Authorization='Bearer '+token;const r=await fetch(path,{method:opt.method||'GET',headers,body:opt.body?JSON.stringify(opt.body):undefined});let d={};try{d=await r.json()}catch{}if(!r.ok)throw Error(d.error||'Request failed');return d}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function money(n){return '₹'+Number(n||0).toLocaleString('en-IN')}
 async function refresh(){products=await api('/api/admin/products');orders=await api('/api/admin/orders')}
@@ -16,8 +18,8 @@ function overview(){const revenue=orders.filter(o=>o.status!=='CANCELLED').reduc
     try{
       const d=await api('/api/admin/agent/execute',{method:'POST',body:{approval_id:action.approvalId}});
       btn.textContent='Done ✓'; btn.classList.remove('primary'); btn.classList.add('soft');
-      aiHistory.push({role:'assistant',content:'Executed '+action.type+' successfully.'});
-      await refresh(); setView(currentView);
+      aiHistory.push({role:'assistant',content:'Executed '+action.type+' successfully.'}); saveAIHistory(); renderAIHistory();
+      await refresh(); if(currentView!=='approvals') setView(currentView);
     }catch(e){btn.disabled=false;btn.textContent='Approve & Execute';alert(e.message)}
   });
   $('#aiHistory .agent-reject').forEach(btn=>btn.onclick=async()=>{
@@ -30,27 +32,24 @@ function overview(){const revenue=orders.filter(o=>o.status!=='CANCELLED').reduc
 }
 async function runAgent(command){
   if(!command.trim())return;
-  const input=$('#aiCommand'), out=$('#aiOutput'), historyBox=$('#aiHistory');
+  const input=$('#aiCommand'),out=$('#aiOutput');
   const userMessage=command.trim();
-  aiHistory.push({role:'user',content:'[AGENT] '+userMessage});
-  if(historyBox) historyBox.innerHTML=aiHistory.map(m=>'<div class="ai-message '+m.role+'"><strong>'+esc(m.role==='user'?'You':'AI')+'</strong><div>'+esc(m.content)+'</div></div>').join('');
+  aiHistory.push({role:'user',content:'[AGENT] '+userMessage}); saveAIHistory(); renderAIHistory();
   out.textContent='Planning…';
   try{
     const d=await api('/api/admin/agent/command',{method:'POST',body:{command:userMessage}});
     const reply=d.reply||'Agent plan ready.';
-    aiHistory.push({role:'assistant',content:reply});
-    if(historyBox) historyBox.innerHTML=aiHistory.map(m=>'<div class="ai-message '+m.role+'"><strong>'+esc(m.role==='user'?'You':'AI')+'</strong><div>'+esc(m.content)+'</div></div>').join('');
+    aiHistory.push({role:'assistant',content:reply}); saveAIHistory(); renderAIHistory();
     if(d.actions?.length) renderAgentActions(d.actions);
-    out.textContent=d.actions?.length?('Agent found '+d.actions.length+' action(s). Approve the ones you want executed.'):'No executable action was generated.';
+    out.textContent=d.actions?.length?('Agent found '+d.actions.length+' action(s). Approve or reject them below.'):'No executable action was generated.';
     input.value=''; input.focus();
   }catch(e){out.textContent='Agent error: '+e.message}
 }
 async function askAI(command){
   if(!command.trim())return;
-  const input=$('#aiCommand'),out=$('#aiOutput'),historyBox=$('#aiHistory');
+  const input=$('#aiCommand'),out=$('#aiOutput');
   const userMessage=command.trim();
-  aiHistory.push({role:'user',content:userMessage});
-  if(historyBox) historyBox.innerHTML=aiHistory.map(m=>'<div class="ai-message '+m.role+'"><strong>'+esc(m.role==='user'?'You':'AI')+'</strong><div>'+esc(m.content)+'</div></div>').join('');
+  aiHistory.push({role:'user',content:userMessage}); saveAIHistory(); renderAIHistory();
   out.textContent='Thinking…';
   try{
     const d=await api('/api/ai/chat',{method:'POST',body:{
@@ -58,19 +57,17 @@ async function askAI(command){
       context:{products,orders,conversation:aiHistory.slice(-12)}
     }});
     const reply=d.reply||d.error||'No response';
-    aiHistory.push({role:'assistant',content:reply});
-    if(historyBox) historyBox.innerHTML=aiHistory.map(m=>'<div class="ai-message '+m.role+'"><strong>'+esc(m.role==='user'?'You':'AI')+'</strong><div>'+esc(m.content)+'</div></div>').join('');
+    aiHistory.push({role:'assistant',content:reply}); saveAIHistory(); renderAIHistory();
     out.textContent='';
     input.value='';
     input.focus();
   }catch(e){
-    const reply='AI error: '+e.message;
-    aiHistory.push({role:'assistant',content:reply});
-    if(historyBox) historyBox.innerHTML=aiHistory.map(m=>'<div class="ai-message '+m.role+'"><strong>'+esc(m.role==='user'?'You':'AI')+'</strong><div>'+esc(m.content)+'</div></div>').join('');
+    aiHistory.push({role:'assistant',content:'AI error: '+e.message}); saveAIHistory(); renderAIHistory();
     out.textContent='';
     input.focus();
   }
 }
+
 function productView(){let rows=products.map(p=>'<div class="product-row"><img src="'+esc(p.img||'')+'" alt=""><div><strong>'+esc(p.name)+'</strong><div class="muted">'+esc(p.category||'')+' · '+money(p.price_inr)+'</div><span class="badge">'+esc((p.badges||[])[0]||'Product')+'</span></div><div class="actions"><button class="btn soft edit" data-id="'+esc(p.id)+'">Edit</button><button class="btn danger del" data-id="'+esc(p.id)+'">Delete</button></div></div>').join('');$('#products').innerHTML='<div class="section-card"><div class="section-head"><div><h2>Products</h2><div class="muted">'+products.length+' products</div></div><button class="btn primary" id="newProduct">+ Add Product</button></div>'+rows+'</div>';$('#newProduct').onclick=()=>openProductModal();$$('#products .edit').forEach(b=>b.onclick=()=>openProductModal(products.find(p=>p.id===b.dataset.id)));$$('#products .del').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.id))}
 function openProductModal(p){const edit=!!p,m=document.createElement('div');m.className='modal';m.innerHTML='<div class="modal-card"><button class="close">✕</button><h2>'+(edit?'Edit':'Add')+' Product</h2><div class="form-grid"><div><label>Name</label><input id="pn" value="'+esc(p?.name||'')+'"></div><div><label>Category</label><input id="pc" value="'+esc(p?.category||'')+'"></div><div><label>Price (INR)</label><input id="pp" type="number" value="'+Number(p?.price_inr||0)+'"></div><div><label>Compare at</label><input id="px" type="number" value="'+Number(p?.compare_at_inr||0)+'"></div><div class="full"><label>Image URL/path</label><input id="pi" value="'+esc(p?.img||'img/p1.svg')+'"></div><div class="full"><label>Tagline</label><input id="pt" value="'+esc(p?.tagline||'')+'"></div><div class="full"><label>Description</label><textarea id="pd" rows="4">'+esc(p?.description||'')+'</textarea></div><div class="full"><label>Features (one per line)</label><textarea id="pf" rows="4">'+esc((p?.features||[]).join('\n'))+'</textarea></div><div><label>Badge</label><input id="pb" value="'+esc((p?.badges||[])[0]||'New')+'"></div><div><label>SKU</label><input id="ps" value="'+esc(p?.sku||'')+'"></div></div><div class="actions" style="margin-top:14px"><button id="saveP" class="btn primary">'+(edit?'Save changes':'Create product')+'</button><button id="cancelP" class="btn">Cancel</button></div><p id="perr" class="error"></p></div>';document.body.appendChild(m);const close=()=>m.remove();$('.close',m).onclick=close;$('#cancelP',m).onclick=close;$('#saveP',m).onclick=async()=>{const body={name:$('#pn',m).value,category:$('#pc',m).value,price_inr:Number($('#pp',m).value),compare_at_inr:Number($('#px',m).value)||0,img:$('#pi',m).value,tagline:$('#pt',m).value,description:$('#pd',m).value,features:$('#pf',m).value.split(/\n+/).map(x=>x.trim()).filter(Boolean),badges:[$('#pb',m).value||'New'],sku:$('#ps',m).value.trim()};try{await api(edit?'/api/admin/products/'+encodeURIComponent(p.id):'/api/admin/products',{method:edit?'PUT':'POST',body});await refresh();close();productView()}catch(e){$('#perr',m).textContent=e.message}}}
 async function deleteProduct(id){if(!confirm('Delete this product?'))return;try{await api('/api/admin/products/'+encodeURIComponent(id),{method:'DELETE'});await refresh();productView()}catch(e){alert(e.message)}}
@@ -80,7 +77,23 @@ function marketingView(){const seasons=['Diwali','Holi','Eid','Christmas','New Y
 function seoView(){const opts=products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('');$('#seo').innerHTML='<div class="ai-box"><h2>🧠 AI SEO Manager</h2><p>Generate SEO drafts from real product data.</p><select id="seoP" class="command" style="color:#111">'+opts+'</select><button id="seoBtn" class="btn primary">Generate SEO</button><div id="seoOut" class="ai-output">Ready.</div></div>';$('#seoBtn').onclick=async()=>{const p=products.find(x=>x.id===$('#seoP').value),o=$('#seoOut');o.textContent='Generating…';try{const d=await api('/api/ai/chat',{method:'POST',body:{message:'Create SEO title, meta description, slug, keywords and FAQ for this product. Product: '+JSON.stringify(p),task:'seo',context:{product:p}}});o.textContent=d.reply||'No result'}catch(e){o.textContent='AI not configured: '+e.message}}}
 function supportView(){$('#support').innerHTML='<div class="section-card"><h2>Customer Support</h2><p class="muted">Central support is ready for website/app/WhatsApp integration once official messaging credentials are configured.</p><div class="notice">WhatsApp Business API and live human inbox require official provider credentials.</div></div>'}
 async function approvalView(){
-  $('#approvals').innerHTML='<div class="section-card"><div class="section-head"><div><h2>Approval Center</h2><div class="muted">Persistent owner approvals stored in Supabase.</div></div><button class="btn soft" id="refreshApprovals">Refresh</button></div><div id="approvalList" class="approval-list">Loading…</div></div>';
+  $('#approvals').innerHTML='<div class="section-card ai-center-card"><div class="section-head"><div><h2>🤖 BBest Globly AI Manager</h2><div class="muted">Business AI, Agent actions and owner approvals are kept together here.</div></div><div class="actions"><button class="btn soft" id="clearAIChat">New Chat</button><button class="btn soft" id="dailyReport">Daily summary</button></div></div><div id="aiHistory" class="ai-history ai-center-history"></div><div id="aiOutput" class="ai-output">Ask about products, orders, SEO, marketing or operations.</div><textarea id="aiCommand" class="command" placeholder="Ask your AI Manager…"></textarea><div class="ai-center-actions"><button class="btn primary" id="askAI">Ask AI</button><button class="btn soft" id="runAgent">Run Agent</button></div></div><div class="section-card"><div class="section-head"><div><h2>Approval Center</h2><div class="muted">Persistent owner approvals stored in Supabase.</div></div><button class="btn soft" id="refreshApprovals">Refresh</button></div><div id="approvalList" class="approval-list">Loading…</div></div>';
+  renderAIHistory();
+
+  $('#clearAIChat').onclick=()=>{
+    aiHistory=[];
+    sessionStorage.removeItem('bg_ai_history');
+    renderAIHistory();
+    $('#aiOutput').textContent='New chat started. Ask your AI Manager…';
+    $('#aiCommand').focus();
+  };
+  $('#askAI').onclick=()=>askAI($('#aiCommand').value);
+  $('#runAgent').onclick=()=>runAgent($('#aiCommand').value);
+  $('#dailyReport').onclick=()=>askAI('Give a daily business report using actual BBest Globly data. Do not invent numbers.');
+  $('#aiCommand').addEventListener('keydown',e=>{
+    if((e.ctrlKey||e.metaKey)&&e.key==='Enter') askAI(e.currentTarget.value);
+  });
+
   async function load(){
     const box=$('#approvalList');
     try{
@@ -90,11 +103,14 @@ async function approvalView(){
         const pending=r.status==='PENDING';
         return '<div class="agent-action"><div class="section-head"><strong>'+esc(r.action_type)+'</strong><span class="badge">'+esc(r.status)+'</span></div><div class="muted">'+esc(r.reason||'Owner approval required')+'</div><pre>'+esc(JSON.stringify(r.payload||{},null,2))+'</pre><div class="actions">'+(pending?'<button class="btn primary approve-row" data-id="'+esc(r.id)+'">Approve & Execute</button><button class="btn danger reject-row" data-id="'+esc(r.id)+'">Reject</button>':'')+'</div></div>';
       }).join('');
-      $('.approve-row',box).forEach(btn=>btn.onclick=async()=>{
+      $$('.approve-row',box).forEach(btn=>btn.onclick=async()=>{
         btn.disabled=true;btn.textContent='Executing…';
-        try{await api('/api/admin/agent/execute',{method:'POST',body:{approval_id:btn.dataset.id}});await load();await refresh();setView(currentView)}catch(e){btn.disabled=false;btn.textContent='Approve & Execute';alert(e.message)}
+        try{
+          await api('/api/admin/agent/execute',{method:'POST',body:{approval_id:btn.dataset.id}});
+          await load();await refresh();
+        }catch(e){btn.disabled=false;btn.textContent='Approve & Execute';alert(e.message)}
       });
-      $('.reject-row',box).forEach(btn=>btn.onclick=async()=>{
+      $$('.reject-row',box).forEach(btn=>btn.onclick=async()=>{
         btn.disabled=true;btn.textContent='Rejecting…';
         try{await api('/api/admin/approvals/'+encodeURIComponent(btn.dataset.id)+'/reject',{method:'POST'});await load()}catch(e){btn.disabled=false;btn.textContent='Reject';alert(e.message)}
       });
@@ -103,16 +119,8 @@ async function approvalView(){
   $('#refreshApprovals').onclick=load;
   await load();
 }
-function initAISidePanel(){
-  const panel=$('#aiSidePanel'),toggle=$('#aiSideToggle'),close=$('#aiSideClose'),backdrop=$('#aiSideBackdrop');
-  const open=()=>{panel.classList.add('open');backdrop.classList.add('open');$('#aiCommand').focus()};
-  const shut=()=>{panel.classList.remove('open');backdrop.classList.remove('open')};
-  toggle.onclick=open; close.onclick=shut; backdrop.onclick=shut;
-  $('#askAI').onclick=()=>askAI($('#aiCommand').value);
-  $('#runAgent').onclick=()=>runAgent($('#aiCommand').value);
-  $('#dailyReport').onclick=()=>askAI('Give a daily business report using actual BBest Globly data. Do not invent numbers.');
-  $('#aiCommand').addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key==='Enter') askAI(e.currentTarget.value)});
-}
+
+function initAISidePanel(){ /* AI Manager is rendered inside Approval Center. */ }
 $('.nav-btn').forEach(b=>b.onclick=()=>setView(b.dataset.view));
 $('#loginBtn').onclick=async()=>{try{const r=await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('#loginUser').value,password:$('#loginPass').value})});const d=await r.json();if(!r.ok)throw Error(d.error);token=d.token;localStorage.setItem('bg_admin',token);$('#loginPanel').classList.add('hidden');$('#appPanel').classList.remove('hidden');await refresh();render();checkAI()}catch(e){$('#loginErr').textContent=e.message}};
 $('#logoutBtn').onclick=()=>{token='';localStorage.removeItem('bg_admin');location.reload()};

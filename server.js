@@ -44,6 +44,76 @@ const writeJSON = (f, d) => {
   if (typeof syncJsonFile === 'function') queueMicrotask(() => syncJsonFile(f, d).catch(e => console.error('[supabase sync]', e.message)));
 };
 
+function normalizeProductBody(b, idOverride) {
+  const body = b || {};
+  const name = String(body.name || '').trim().slice(0, 160);
+  if (!name) throw new Error('product name is required');
+  const baseId = idOverride || String(body.id || '').trim() || name.toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || ('product-' + Date.now());
+  const features = Array.isArray(body.features) ? body.features.map(x => String(x).trim()).filter(Boolean).slice(0, 20) : [];
+  const badges = Array.isArray(body.badges) ? body.badges.map(x => String(x).trim()).filter(Boolean).slice(0, 10) : [];
+  return {
+    id: baseId,
+    name,
+    category: String(body.category || '').trim().slice(0, 80),
+    tagline: String(body.tagline || '').trim().slice(0, 180),
+    price_inr: Math.max(0, Number(body.price_inr || 0)),
+    compare_at_inr: Math.max(0, Number(body.compare_at_inr || 0)),
+    img: String(body.img || '').trim().slice(0, 500),
+    badges,
+    demo: Boolean(body.demo),
+    description: String(body.description || '').trim().slice(0, 3000),
+    features,
+    sku: String(body.sku || '').trim().slice(0, 80) || null,
+    stock: Math.max(0, Math.floor(Number(body.stock ?? 0))),
+    published: body.published !== false,
+    updated: new Date().toISOString()
+  };
+}
+
+async function logAgent(role, message, response) {
+  if (!supabaseReady) return;
+  try {
+    await supabaseRequest('agent_logs', {
+      method:'POST',
+      headers:{'Prefer':'return=minimal'},
+      body:JSON.stringify({role, message, response})
+    });
+  } catch(e) { console.error('[supabase agent log]', e.message); }
+}
+
+async function createAgentApprovals(actions) {
+  if (!supabaseReady) throw new Error('Supabase persistence is required for agent approvals');
+  const rows = (actions || []).slice(0,5).map(a => ({
+    action_type:String(a.type || ''),
+    payload:a.payload || {},
+    reason:String(a.reason || 'Owner approval required'),
+    status:'PENDING'
+  }));
+  if (!rows.length) return [];
+  return await supabaseRequest('agent_approvals', {
+    method:'POST',
+    headers:{'Prefer':'return=representation'},
+    body:JSON.stringify(rows)
+  });
+}
+
+async function getAgentApproval(id) {
+  if (!supabaseReady) throw new Error('Supabase persistence is required for agent approvals');
+  const rows = await supabaseRequest('agent_approvals?select=*&id=eq.' + encodeURIComponent(id));
+  return Array.isArray(rows) ? rows[0] : null;
+}
+
+async function updateAgentApproval(id, patch) {
+  if (!supabaseReady) throw new Error('Supabase persistence is required for agent approvals');
+  return await supabaseRequest('agent_approvals?id=eq.' + encodeURIComponent(id), {
+    method:'PATCH',
+    headers:{'Prefer':'return=minimal'},
+    body:JSON.stringify(patch)
+  });
+}
+
+
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const supabaseReady = !!(SUPABASE_URL && SUPABASE_SECRET_KEY);
@@ -72,7 +142,7 @@ async function syncJsonFile(file, data) {
       id:x.id,name:x.name,category:x.category||'',tagline:x.tagline||'',
       price_inr:Number(x.price_inr||0),compare_at_inr:Number(x.compare_at_inr||0),
       img:x.img||'',badges:x.badges||[],demo:!!x.demo,description:x.description||'',
-      features:x.features||[],sku:x.sku||null,stock:Number(x.stock??100),updated_at:new Date().toISOString()
+      features:x.features||[],sku:x.sku||null,stock:Number(x.stock??100),published:x.published!==false,updated_at:new Date().toISOString()
     }));
     await supabaseRequest('products?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(rows)});
   } else if (file === 'orders.json') {
@@ -95,7 +165,7 @@ async function hydrateSupabase() {
     if(Array.isArray(products) && products.length) writeJSON('products.json',products.map(x=>({
       id:x.id,name:x.name,category:x.category,tagline:x.tagline,price_inr:Number(x.price_inr),
       compare_at_inr:Number(x.compare_at_inr||0),img:x.img,badges:x.badges||[],demo:!!x.demo,
-      description:x.description,features:x.features||[],sku:x.sku,stock:Number(x.stock||0)
+      description:x.description,features:x.features||[],sku:x.sku,stock:Number(x.stock||0),published:x.published!==false
     })));
     const orders=await supabaseRequest('orders?select=*&order=created.asc');
     if(Array.isArray(orders)) writeJSON('orders.json',orders);
@@ -223,12 +293,25 @@ async function agentCommand(command) {
     {role:'user',content:JSON.stringify({command,context:currentAIContext()})}
   ],{temperature:0.1});
   const parsed=safeJson(raw);
-  if(!parsed) return {configured:true,reply:raw,actions:[]};
-  return {
+  if(!parsed) {
+    await logAgent('owner', command, {reply:raw,actions:[]});
+    return {configured:true,reply:raw,actions:[]};
+  }
+  const planned = Array.isArray(parsed.actions)
+    ? parsed.actions.map(a=>({...a,requiresApproval:true})).slice(0,5)
+    : [];
+  let stored = [];
+  if (planned.length) {
+    stored = await createAgentApprovals(planned);
+  }
+  const actions = planned.map((a,i)=>({...a,approvalId:stored[i]?.id || null}));
+  const result = {
     configured:true,
     reply:String(parsed.reply||'Agent plan ready.'),
-    actions:Array.isArray(parsed.actions)?parsed.actions.map(a=>({...a,requiresApproval:true})).slice(0,5):[]
+    actions
   };
+  await logAgent('owner', command, result);
+  return result;
 }
 
 
@@ -267,16 +350,16 @@ const server = http.createServer(async (req, res) => {
   let p;
   try { p = decodeURIComponent(url.pathname); } catch (e) { return json(res, 400, { error: 'bad path' }); }
   try {
-    if (p === '/api/health') return json(res, 200, { ok: true, service: 'bbest-globly-store', version: 2.1, uptime: process.uptime() | 0, time: new Date().toISOString() });
+    if (p === '/api/health') return json(res, 200, { ok: true, service: 'bbest-globly-store', version: 2.2, persistence: supabaseReady ? 'supabase' : 'local', uptime: process.uptime() | 0, time: new Date().toISOString() });
 
     if (p === '/sitemap.xml' && req.method === 'GET') {
-      const urls = ['', '/shop', '/track'].concat(loadCatalog().map(x => '/product/' + x.id));
+      const urls = ['', '/shop', '/track'].concat(loadCatalog().filter(x => x.published !== false).map(x => '/product/' + x.id));
       const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<!-- Set BASE_URL env var to your real domain before production -->\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
         urls.map(u => '  <url><loc>' + BASE_URL + u + '</loc></url>').join('\n') + '\n</urlset>';
       return send(res, 200, xml, 'application/xml; charset=utf-8');
     }
 
-    if (p === '/api/products' && req.method === 'GET') return send(res, 200, fs.readFileSync(fpath('products.json')));
+    if (p === '/api/products' && req.method === 'GET') return json(res, 200, loadCatalog().filter(x => x.published !== false));
 
     /* ---------------- customer auth ---------------- */
     if (p === '/api/auth/register' && req.method === 'POST') {
@@ -391,7 +474,7 @@ const server = http.createServer(async (req, res) => {
       if (channel !== 'website' && (!a || a.session.admin !== true)) {
         return json(res, 401, {error:'admin authentication required'});
       }
-      const publicProducts = loadCatalog().map(x => ({
+      const publicProducts = loadCatalog().filter(x => x.published !== false).map(x => ({
         id:x.id,name:x.name,category:x.category,price_inr:x.price_inr,
         stock:x.stock||0,tagline:x.tagline,description:x.description
       }));
@@ -477,53 +560,81 @@ const server = http.createServer(async (req, res) => {
         catch(e) { return json(res,502,{configured:aiReady,error:e.message}); }
       }
 
+      if (p === '/api/admin/approvals' && req.method === 'GET') {
+        if (!supabaseReady) return json(res,200,[]);
+        try {
+          const rows=await supabaseRequest('agent_approvals?select=*&order=created_at.desc&limit=50');
+          return json(res,200,Array.isArray(rows)?rows:[]);
+        } catch(e) { return json(res,502,{error:e.message}); }
+      }
+
+      if (p.startsWith('/api/admin/approvals/') && p.endsWith('/reject') && req.method === 'POST') {
+        const id=decodeURIComponent(p.slice('/api/admin/approvals/'.length,-'/reject'.length));
+        try {
+          const approval=await getAgentApproval(id);
+          if(!approval) return json(res,404,{error:'approval not found'});
+          if(approval.status!=='PENDING') return json(res,409,{error:'approval is already '+approval.status});
+          await updateAgentApproval(id,{status:'REJECTED'});
+          await logAgent('owner', 'Rejected approval '+id, {approvalId:id,status:'REJECTED'});
+          return json(res,200,{ok:true,id,status:'REJECTED'});
+        } catch(e) { return json(res,400,{error:e.message}); }
+      }
+
       if (p === '/api/admin/agent/execute' && req.method === 'POST') {
         const b = await readBody(req);
-        const type=String(b.type||'');
-        const payload=b.payload||{};
+        const approvalId=String(b.approval_id||'').trim();
+        if(!approvalId) return json(res,400,{error:'approval_id is required'});
         try {
+          const approval=await getAgentApproval(approvalId);
+          if(!approval) return json(res,404,{error:'approval not found'});
+          if(approval.status!=='PENDING') return json(res,409,{error:'approval is already '+approval.status});
+          const type=String(approval.action_type||'');
+          const payload=approval.payload||{};
+          let result;
+
           if(type==='add_product'){
             const catalog=loadCatalog();
-            const prod=normalizeProductBody(payload);
+            const prod=normalizeProductBody({...payload,published:true});
             if(catalog.some(x=>x.id===prod.id||x.name.toLowerCase()===prod.name.toLowerCase())) return json(res,409,{error:'A product with this name/id already exists'});
             catalog.push(prod); writeJSON('products.json',catalog);
-            return json(res,200,{ok:true,action:type,product:prod});
-          }
-          if(type==='update_product'){
+            result={ok:true,action:type,product:prod};
+          } else if(type==='update_product'){
             if(!payload.id) return json(res,400,{error:'product id is required'});
             const catalog=loadCatalog(), ix=catalog.findIndex(x=>x.id===payload.id);
             if(ix<0) return json(res,404,{error:'product not found'});
-            const merged={...catalog[ix],...payload,id:catalog[ix].id,updated:new Date().toISOString()};
-            const prod=normalizeProductBody(merged,catalog[ix].id);
-            catalog[ix]=prod; writeJSON('products.json',catalog);
-            return json(res,200,{ok:true,action:type,product:prod});
-          }
-          if(type==='delete_product'){
+            const merged={...catalog[ix],...payload,id:catalog[ix].id,published:true};
+            catalog[ix]=normalizeProductBody(merged,catalog[ix].id); writeJSON('products.json',catalog);
+            result={ok:true,action:type,product:catalog[ix]};
+          } else if(type==='delete_product'){
             if(!payload.id) return json(res,400,{error:'product id is required'});
             const catalog=loadCatalog(), next=catalog.filter(x=>x.id!==payload.id);
             if(next.length===catalog.length) return json(res,404,{error:'product not found'});
-            writeJSON('products.json',next); return json(res,200,{ok:true,action:type,deleted:payload.id});
-          }
-          if(type==='set_site_config'){
+            writeJSON('products.json',next); result={ok:true,action:type,deleted:payload.id};
+          } else if(type==='set_site_config'){
             const cfg=loadSiteConfig(), next={...cfg};
             if(payload.hero && typeof payload.hero==='object'){
               next.hero={...cfg.hero,...payload.hero};
               for(const k of ['kicker','title','subtitle']) next.hero[k]=String(next.hero[k]||'').slice(0,300);
             }
             if(payload.theme && typeof payload.theme==='object' && payload.theme.accent) next.theme={...cfg.theme,accent:String(payload.theme.accent).slice(0,30)};
-            writeJSON('site_config.json',next);
-            return json(res,200,{ok:true,action:type,site_config:next});
-          }
-          if(type==='set_order_status'){
+            writeJSON('site_config.json',next); result={ok:true,action:type,site_config:next};
+          } else if(type==='set_order_status'){
             const allowed=['PENDING','CONFIRMED','SHIPPED','DELIVERED','CANCELLED'];
             if(!payload.id || !allowed.includes(payload.status)) return json(res,400,{error:'invalid order action'});
             const orders=loadOrders(), o=orders.find(x=>x.id===payload.id);
             if(!o) return json(res,404,{error:'order not found'});
             o.status=payload.status; o.status_updated=new Date().toISOString(); saveOrders(orders);
-            return json(res,200,{ok:true,action:type,id:o.id,status:o.status});
+            result={ok:true,action:type,id:o.id,status:o.status};
+          } else {
+            return json(res,400,{error:'unsupported agent action'});
           }
-          return json(res,400,{error:'unsupported agent action'});
-        } catch(e) { return json(res,400,{error:e.message}); }
+
+          await updateAgentApproval(approvalId,{status:'EXECUTED',executed_at:new Date().toISOString()});
+          await logAgent('owner', 'Executed approval '+approvalId, result);
+          return json(res,200,{...result,approvalId});
+        } catch(e) {
+          return json(res,400,{error:e.message});
+        }
       }
 
       if (p === '/api/admin/orders' && req.method === 'GET') return json(res, 200, loadOrders().reverse());

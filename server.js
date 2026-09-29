@@ -912,5 +912,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 hydrateSupabase().finally(() => {
-  server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v2.1 listening on http://0.0.0.0:' + PORT));
+  server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v2.3 listening on http://0.0.0.0:' + PORT));
 });

@@ -847,6 +847,22 @@ const server = http.createServer(async (req, res) => {
     }
 
     /* ---------------- payments (Razorpay-ready — activates via env keys) ---------------- */
+    if (p === '/api/payment/status' && req.method === 'GET') {
+      return json(res, 200, {
+        razorpay: {
+          key_id_present: !!RZP_KEY_ID,
+          key_secret_present: !!RZP_KEY_SECRET,
+          webhook_secret_present: !!RZP_WEBHOOK_SECRET,
+          payments_ready: paymentsReady
+        },
+        shiprocket: {
+          email_present: !!SHIPROCKET_EMAIL,
+          password_present: !!SHIPROCKET_PASSWORD,
+          pickup_location_present: !!SHIPROCKET_PICKUP_LOCATION
+        }
+      });
+    }
+
     if (p === '/api/payment/config' && req.method === 'GET') {
       return json(res, 200, { razorpay: { enabled: paymentsReady, key_id: paymentsReady ? RZP_KEY_ID : null }, shiprocket: { enabled: !!(SHIPROCKET_EMAIL&&SHIPROCKET_PASSWORD&&SHIPROCKET_PICKUP_LOCATION), autoFulfill: SHIPROCKET_AUTO_FULFILL } });
     }

@@ -12,7 +12,7 @@ const ROOT = __dirname;
 const PORT = process.env.PORT || 3000;
 const DATA = path.join(ROOT, 'data');
 const BASE_URL = (process.env.BASE_URL || 'https://REPLACE-WITH-YOUR-DOMAIN.example').replace(/\/+$/, '');
-const ORDER_STATUSES = ['PENDING', 'CONFIRMED', 'SHIPPED', 'DELIVERED', 'CANCELLED'];
+const ORDER_STATUSES = ['PENDING', 'AWAITING_PAYMENT', 'CONFIRMED', 'SHIPPED', 'DELIVERED', 'CANCELLED'];
 const RZP_KEY_ID = process.env.RAZORPAY_KEY_ID || '';
 const RZP_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET || '';
 const paymentsReady = !!(RZP_KEY_ID && RZP_KEY_SECRET);
@@ -848,7 +848,9 @@ const server = http.createServer(async (req, res) => {
 
     /* ---------------- payments (Razorpay-ready — activates via env keys) ---------------- */
     if (p === '/api/payment/status' && req.method === 'GET') {
+      res.setHeader('Cache-Control','no-store, no-cache, must-revalidate, max-age=0');
       return json(res, 200, {
+        ok:true,
         razorpay: {
           key_id_present: !!RZP_KEY_ID,
           key_secret_present: !!RZP_KEY_SECRET,
@@ -864,7 +866,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/payment/config' && req.method === 'GET') {
-      return json(res, 200, { razorpay: { enabled: paymentsReady, key_id: paymentsReady ? RZP_KEY_ID : null }, shiprocket: { enabled: !!(SHIPROCKET_EMAIL&&SHIPROCKET_PASSWORD&&SHIPROCKET_PICKUP_LOCATION), autoFulfill: SHIPROCKET_AUTO_FULFILL } });
+      res.setHeader('Cache-Control','no-store, no-cache, must-revalidate, max-age=0');
+      return json(res, 200, { ok:true, razorpay: { enabled: paymentsReady, key_id: paymentsReady ? RZP_KEY_ID : null }, shiprocket: { enabled: !!(SHIPROCKET_EMAIL&&SHIPROCKET_PASSWORD&&SHIPROCKET_PICKUP_LOCATION), autoFulfill: SHIPROCKET_AUTO_FULFILL } });
     }
     if (p === '/api/payment/order' && req.method === 'POST') {
       if (!paymentsReady) return json(res, 503, { error: 'payment gateway not configured (set RAZORPAY_KEY_ID & RAZORPAY_KEY_SECRET)' });
@@ -928,5 +931,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 hydrateSupabase().finally(() => {
-  server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v2.3 listening on http://0.0.0.0:' + PORT));
+  server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v2.5 listening on http://0.0.0.0:' + PORT));
 });

@@ -1014,7 +1014,7 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith('/api/')) return json(res, 404, { error: 'unknown api route' });
 
 
-    if (p === '/dashboard' || p === '/dashboard.html') {
+    if (p === '/dashboard' || p === '/dashboard.html' || p === '/admin') {
       return fs.readFile(path.join(ROOT, 'dashboard.html'), (err, data) => err ? json(res,404,{error:'dashboard not found'}) : send(res,200,data,MIME['.html']));
     }
 

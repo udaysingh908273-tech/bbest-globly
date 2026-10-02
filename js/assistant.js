@@ -26,7 +26,7 @@ chat.querySelector('#bgAiForm').onsubmit=async e=>{
   e.preventDefault();const msg=input.value.trim();if(!msg||input.disabled)return;
   history.push({role:'user',content:msg});save();draw();input.value='';setBusy(true);
   try{
-    const r=await fetch('/api/ai/chat',{method:'POST',headers:authHeaders(),body:JSON.stringify({message:msg,channel:'website',task:'customer_support',context:{conversation:history.slice(-16)}})}),d=await r.json();
+    const r=await fetch('/api/ai/chat',{method:'POST',headers:authHeaders(),body:JSON.stringify({message:msg,channel:'website',task:'customer_support',session_id:localStorage.getItem('bg_analytics_session')||'',context:{conversation:history.slice(-16)}})}),d=await r.json();
     history.push({role:'assistant',content:d.reply||d.error||'I could not answer that right now.'});
   }catch{history.push({role:'assistant',content:'Support is temporarily unavailable. Please try again or use Human support.'})}
   finally{save();draw();setBusy(false);input.focus()}

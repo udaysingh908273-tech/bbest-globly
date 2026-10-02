@@ -9,9 +9,9 @@ const path = require('path');
 const crypto = require('crypto');
 let nodemailer = null;
 try { nodemailer = require('nodemailer'); } catch {}
-const GMAIL_SMTP_USER = process.env.GMAIL_SMTP_USER || '';
-const GMAIL_SMTP_APP_PASSWORD = process.env.GMAIL_SMTP_APP_PASSWORD || '';
-const ADMIN_RECOVERY_EMAIL = (process.env.ADMIN_RECOVERY_EMAIL || GMAIL_SMTP_USER).trim().toLowerCase();
+const GMAIL_SMTP_USER = String(process.env.GMAIL_SMTP_USER || '').trim();
+const GMAIL_SMTP_APP_PASSWORD = String(process.env.GMAIL_SMTP_APP_PASSWORD || '').replace(/\s+/g,'');
+const ADMIN_RECOVERY_EMAIL = String(process.env.ADMIN_RECOVERY_EMAIL || GMAIL_SMTP_USER).trim().toLowerCase();
 const gmailOtpReady = !!(nodemailer && GMAIL_SMTP_USER && GMAIL_SMTP_APP_PASSWORD && ADMIN_RECOVERY_EMAIL);
 const otpThrottle = new Map();
 function otpAllowed(key){
@@ -235,24 +235,42 @@ async function resetAdminPassword(newPassword) {
   });
 }
 async function sendAdminOtp(email){
-  if(!gmailOtpReady) throw new Error('Gmail OTP is not configured. Add GMAIL_SMTP_USER, GMAIL_SMTP_APP_PASSWORD and ADMIN_RECOVERY_EMAIL in Render.');
+  if(!gmailOtpReady) throw new Error('Gmail OTP is not configured. In Render add GMAIL_SMTP_USER, GMAIL_SMTP_APP_PASSWORD and ADMIN_RECOVERY_EMAIL.');
+  const safeEmail=String(email||'').trim().toLowerCase();
+  if(safeEmail!==ADMIN_RECOVERY_EMAIL) throw new Error('This email is not the configured admin recovery email.');
   const otp=String(crypto.randomInt(100000,1000000));
   const salt=newSalt(), hash=hashPw(otp,salt), id='OTP-'+crypto.randomBytes(8).toString('hex');
-  const transporter=nodemailer.createTransport({
-    host:'smtp.gmail.com',port:465,secure:true,
-    auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}
+  const smtpPass=GMAIL_SMTP_APP_PASSWORD.replace(/\s+/g,'');
+  let transporter=nodemailer.createTransport({
+    host:'smtp.gmail.com',port:587,secure:false,
+    requireTLS:true,
+    auth:{user:GMAIL_SMTP_USER,pass:smtpPass}
   });
-  await transporter.sendMail({
-    from:GMAIL_SMTP_USER,
-    to:email,
-    subject:'BBest Globly Admin Password Reset OTP',
-    text:'Your BBest Globly admin password reset OTP is '+otp+'. It expires in 10 minutes.',
-    html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>Your admin password reset OTP is:</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This OTP expires in 10 minutes.</p></div>'
-  });
+  try{
+    await transporter.verify();
+  }catch(e){
+    console.error('[gmail otp] SMTP verify failed:',e.code||'',e.message||'unknown error');
+    transporter=nodemailer.createTransport({
+      host:'smtp.gmail.com',port:465,secure:true,
+      auth:{user:GMAIL_SMTP_USER,pass:smtpPass}
+    });
+  }
+  try{
+    await transporter.sendMail({
+      from:GMAIL_SMTP_USER,
+      to:safeEmail,
+      subject:'BBest Globly Admin Password Reset OTP',
+      text:'Your BBest Globly admin password reset OTP is '+otp+'. It expires in 10 minutes.',
+      html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>Your admin password reset OTP is:</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This OTP expires in 10 minutes.</p></div>'
+    });
+  }catch(e){
+    console.error('[gmail otp] send failed:',e.code||'',e.responseCode||'',e.message||'unknown error');
+    throw new Error('Gmail could not send the OTP. Check the Gmail address, 2-Step Verification and App Password in Render.');
+  }
   await supabaseRequest('admin_password_otps',{
     method:'POST',
     headers:{'Prefer':'return=minimal'},
-    body:JSON.stringify([{id,email,otp_hash:hash,otp_salt:salt,attempts:0,used:false,expires_at:new Date(Date.now()+10*60*1000).toISOString()}])
+    body:JSON.stringify([{id,email:safeEmail,otp_hash:hash,otp_salt:salt,attempts:0,used:false,expires_at:new Date(Date.now()+10*60*1000).toISOString()}])
   });
 }
 async function sendCustomerOtp(email){
@@ -1037,10 +1055,11 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/admin/forgot-password/request' && req.method === 'POST') {
       const b=await readBody(req), email=String(b.email||'').trim().toLowerCase();
       if(!/^\S+@\S+\.\S+$/.test(email)) return json(res,400,{error:'Enter a valid recovery email'});
+      if(email!==ADMIN_RECOVERY_EMAIL) return json(res,400,{error:'Use the configured admin recovery email.'});
       if(!otpAllowed('admin:'+email)) return json(res,429,{error:'Please wait before requesting another OTP'});
       try{
-        if(gmailOtpReady && email===ADMIN_RECOVERY_EMAIL) await sendAdminOtp(email);
-        return json(res,200,{ok:true,message:'If this is the configured recovery email, an OTP has been sent.'});
+        await sendAdminOtp(email);
+        return json(res,200,{ok:true,message:'OTP sent. Check Inbox, Spam and Promotions.'});
       }catch(e){return json(res,503,{error:e.message})}
     }
 

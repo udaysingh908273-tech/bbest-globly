@@ -460,6 +460,18 @@ const loadOrders = () => readJSON('orders.json', []);
 const saveOrders = o => writeJSON('orders.json', o);
 
 const RZP_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
+const WHATSAPP_TOKEN=String(process.env.WHATSAPP_TOKEN||'').trim();
+const WHATSAPP_PHONE_NUMBER_ID=String(process.env.WHATSAPP_PHONE_NUMBER_ID||'').trim();
+const WHATSAPP_GRAPH_VERSION=String(process.env.WHATSAPP_GRAPH_VERSION||'').trim();
+const TWILIO_ACCOUNT_SID=String(process.env.TWILIO_ACCOUNT_SID||'').trim();
+const TWILIO_AUTH_TOKEN=String(process.env.TWILIO_AUTH_TOKEN||'').trim();
+const TWILIO_FROM=String(process.env.TWILIO_FROM||'').trim();
+const RESEARCH_API_URL=String(process.env.RESEARCH_API_URL||'').trim();
+const RESEARCH_API_KEY=String(process.env.RESEARCH_API_KEY||'').trim();
+const AD_SPEND_API_URL=String(process.env.AD_SPEND_API_URL||'').trim();
+const AD_SPEND_API_KEY=String(process.env.AD_SPEND_API_KEY||'').trim();
+const ADMIN_2FA_REQUIRED=String(process.env.ADMIN_2FA_REQUIRED||'false').toLowerCase()==='true';
+const RZP_REFUND_READY=!!(RZP_KEY_ID&&RZP_KEY_SECRET);
 const QIKINK_AUTH_TOKEN = process.env.QIKINK_AUTH_TOKEN || '';
 const QIKINK_SHIPPING = String(process.env.QIKINK_SHIPPING || '1') === '1';
 const QIKINK_AUTO_FULFILL = String(process.env.QIKINK_AUTO_FULFILL || 'false').toLowerCase() === 'true';
@@ -544,6 +556,100 @@ async function fetchQikinkPublicCatalog() {
   const result = unique.length ? unique.slice(0,300) : QIKINK_FALLBACK_CATALOG;
   qikinkCatalogCache = { expiresAt:Date.now()+15*60*1000, items:result };
   return result;
+}
+
+
+async function externalJson(url,options={}){
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
+  try{
+    const r=await fetch(url,{...options,signal:controller.signal,headers:{'Accept':'application/json',...(options.headers||{})}});
+    const t=await r.text(); let d=null; try{d=t?JSON.parse(t):null}catch{}
+    if(!r.ok)throw new Error('Provider '+r.status+': '+(d?.message||d?.error||t||'request failed'));
+    return d;
+  }finally{clearTimeout(timer)}
+}
+async function sendWhatsAppText(to,text){
+  if(!WHATSAPP_TOKEN||!WHATSAPP_PHONE_NUMBER_ID||!WHATSAPP_GRAPH_VERSION)throw new Error('WhatsApp Cloud API is not configured');
+  const clean=String(to||'').replace(/[^\d]/g,''); if(clean.length<10)throw new Error('Valid WhatsApp number is required');
+  return await externalJson('https://graph.facebook.com/'+WHATSAPP_GRAPH_VERSION+'/'+encodeURIComponent(WHATSAPP_PHONE_NUMBER_ID)+'/messages',{
+    method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+WHATSAPP_TOKEN},
+    body:JSON.stringify({messaging_product:'whatsapp',to:clean,type:'text',text:{preview_url:false,body:String(text||'').slice(0,3500)}})
+  });
+}
+async function sendSmsText(to,text){
+  if(!TWILIO_ACCOUNT_SID||!TWILIO_AUTH_TOKEN||!TWILIO_FROM)throw new Error('SMS provider is not configured');
+  const body=new URLSearchParams({To:String(to||''),From:TWILIO_FROM,Body:String(text||'').slice(0,1500)});
+  return await externalJson('https://api.twilio.com/2010-04-01/Accounts/'+encodeURIComponent(TWILIO_ACCOUNT_SID)+'/Messages.json',{
+    method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Basic '+Buffer.from(TWILIO_ACCOUNT_SID+':'+TWILIO_AUTH_TOKEN).toString('base64')},body
+  });
+}
+async function notifyCustomer(customer,message){
+  const results=[];
+  if(customer?.phone){
+    if(WHATSAPP_TOKEN)try{results.push({channel:'whatsapp',ok:true,response:await sendWhatsAppText(customer.phone,message)})}catch(e){results.push({channel:'whatsapp',ok:false,error:e.message})}
+    if(TWILIO_ACCOUNT_SID)try{results.push({channel:'sms',ok:true,response:await sendSmsText(customer.phone,message)})}catch(e){results.push({channel:'sms',ok:false,error:e.message})}
+  }
+  if(customer?.email&&gmailOtpReady){
+    try{
+      const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
+      await transporter.sendMail({from:GMAIL_SMTP_USER,to:String(customer.email),subject:'BBest Globly order update',text:String(message||'')});
+      results.push({channel:'email',ok:true});
+    }catch(e){results.push({channel:'email',ok:false,error:e.message})}
+  }
+  return results;
+}
+async function liveResearch(query){
+  if(!RESEARCH_API_URL||!RESEARCH_API_KEY)throw new Error('Live research provider is not configured');
+  const d=await externalJson(RESEARCH_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+RESEARCH_API_KEY},body:JSON.stringify({query:String(query||'').slice(0,3000),market:'IN',language:'en',return_sources:true})});
+  return {provider:'configured',data:d};
+}
+async function importAdSpend(){
+  if(!AD_SPEND_API_URL||!AD_SPEND_API_KEY)throw new Error('Ad spend provider is not configured');
+  const d=await externalJson(AD_SPEND_API_URL,{headers:{'Authorization':'Bearer '+AD_SPEND_API_KEY}});
+  const rows=Array.isArray(d)?d:(Array.isArray(d?.data)?d.data:(Array.isArray(d?.rows)?d.rows:[]));
+  if(!supabaseReady)throw new Error('Supabase is required for ad-spend persistence');
+  let saved=0;
+  for(const x of rows.slice(0,2000)){
+    const row={id:String(x.id||((x.source||'provider')+'-'+(x.campaign_id||x.campaign||'unknown')+'-'+(x.date||new Date().toISOString().slice(0,10)))),
+      source:String(x.source||'provider').slice(0,50),campaign_id:String(x.campaign_id||x.campaignId||'').slice(0,100)||null,campaign_name:String(x.campaign_name||x.campaign||'').slice(0,180)||null,
+      spend_inr:Number(x.spend_inr??x.spend??0),impressions:Math.max(0,Math.floor(Number(x.impressions||0))),clicks:Math.max(0,Math.floor(Number(x.clicks||0))),conversions:Number(x.conversions||0),
+      date:String(x.date||new Date().toISOString().slice(0,10)).slice(0,10),metadata:safeAnalyticsMetadata(x)};
+    await supabaseRequest('ad_spend?on_conflict=source,campaign_id,date',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])}); saved++;
+  }
+  return {saved};
+}
+async function razorpayRefund(paymentId,amountInr,notes={}){
+  if(!RZP_REFUND_READY)throw new Error('Razorpay is not configured');
+  const amount=Math.round(Number(amountInr||0)*100);if(amount<=0)throw new Error('Refund amount must be positive');
+  return await externalJson('https://api.razorpay.com/v1/payments/'+encodeURIComponent(paymentId)+'/refund',{
+    method:'POST',headers:{'Content-Type':'application/json','Authorization':'Basic '+Buffer.from(RZP_KEY_ID+':'+RZP_KEY_SECRET).toString('base64')},
+    body:JSON.stringify({amount,notes})
+  });
+}
+function supplierScore(row){
+  const cost=Math.max(0,Number(row.cost_inr||0)),days=Math.max(1,Number(row.shipping_days||7)),stock=Math.max(0,Number(row.stock||0));
+  const rating=Math.max(0,Math.min(5,Number(row.rating||0)));
+  const returns=Math.max(0,Number(row.return_rate_pct||0)),failure=Math.max(0,Number(row.failure_rate_pct||0));
+  return Number((100 + rating*10 + Math.min(stock,100)*0.05 - days*3 - returns*2 - failure*3 - cost*0.01).toFixed(2));
+}
+async function chooseSupplier(productId,qty=1){
+  if(!supabaseReady)throw new Error('Supabase is required for supplier routing');
+  const rows=await supabaseRequest('supplier_products?select=*,suppliers(id,name,enabled,priority,rating)&product_id=eq.'+encodeURIComponent(productId));
+  const candidates=(Array.isArray(rows)?rows:[]).filter(x=>x.suppliers?.enabled!==false&&Number(x.stock)>=Number(qty||1)).map(x=>({...x,score:supplierScore(x)})).sort((a,b)=>b.score-a.score);
+  return candidates[0]||null;
+}
+async function routeOrderToSupplier(orderId,force=false){
+  if(!supabaseReady)throw new Error('Supabase is required for supplier routing');
+  const orders=loadOrders(),order=orders.find(x=>x.id===orderId);if(!order)throw new Error('Order not found');
+  const routes=[];
+  for(const item of order.items||[]){
+    const chosen=await chooseSupplier(item.id,item.qty);
+    if(chosen)routes.push({product_id:item.id,qty:item.qty,supplier_id:chosen.supplier_id,supplier_sku:chosen.supplier_sku,score:chosen.score,name:chosen.suppliers?.name||chosen.supplier_id});
+  }
+  if(!routes.length)throw new Error('No supplier with available stock is mapped to this order');
+  order.supplier_routes=routes;order.supplier_route_status='ROUTED';order.updated_at=new Date().toISOString();saveOrders(orders);
+  await auditAdmin('admin',force?'FORCE_SUPPLIER_ROUTE':'AUTO_SUPPLIER_ROUTE','order',orderId,{routes});
+  return {orderId,routes};
 }
 
 async function qikinkAIScout(command) {
@@ -1329,7 +1435,13 @@ const server = http.createServer(async (req, res) => {
           password_recovery:{configured:gmailOtpReady},
           payments:{configured:paymentsReady,webhook_secret:!!RZP_WEBHOOK_SECRET},
           shipping:{configured:!!(SHIPROCKET_EMAIL&&SHIPROCKET_PASSWORD&&SHIPROCKET_PICKUP_LOCATION),auto_fulfill:SHIPROCKET_AUTO_FULFILL},
-          supplier_qikink:{configured:qikinkReady,auto_fulfill:QIKINK_AUTO_FULFILL}
+          supplier_qikink:{configured:qikinkReady,auto_fulfill:QIKINK_AUTO_FULFILL},
+          suppliers:{configured:supabaseReady,registry:true},
+          notifications:{whatsapp:!!WHATSAPP_TOKEN&&!!WHATSAPP_PHONE_NUMBER_ID,sms:!!TWILIO_ACCOUNT_SID,email:gmailOtpReady},
+          refunds:{razorpay:RZP_REFUND_READY},
+          research:{configured:!!(RESEARCH_API_URL&&RESEARCH_API_KEY)},
+          ads:{configured:!!(AD_SPEND_API_URL&&AD_SPEND_API_KEY)},
+          security:{two_factor:ADMIN_2FA_REQUIRED,role_based:true}
         });
       }
 

@@ -423,6 +423,7 @@ function initGlobalSearch(){
         if(!q){$("#globalSearchResults").innerHTML='<div class="notice">Type to search.</div>';return}
         for(const p of products)if((p.name+" "+p.category+" "+p.sku).toLowerCase().includes(q))results.push('<button class="search-result" data-go-view="products"><strong>Product</strong> · '+esc(p.name)+'<span>'+money(p.price_inr)+'</span></button>');
         for(const o of orders)if((o.id+" "+(o.customer?.name||"")+" "+(o.customer?.email||"")).toLowerCase().includes(q))results.push('<button class="search-result" data-go-view="orders"><strong>Order</strong> · '+esc(o.id)+'<span>'+money(o.totals?.total_inr)+'</span></button>');
+        for(const u of customers)if((u.name+" "+u.email+" "+u.phone).toLowerCase().includes(q))results.push('<button class="search-result" data-go-view="customers"><strong>Customer</strong> · '+esc(u.name)+'<span>'+money(u.spent_inr)+'</span></button>');
         $("#globalSearchResults").innerHTML=results.length?results.slice(0,20).join(''):'<div class="notice">No match found.</div>';
         $$('.search-result').forEach(x=>x.onclick=()=>{setView(x.dataset.goView);modal.remove()});
       };

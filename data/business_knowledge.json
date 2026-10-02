@@ -31,5 +31,93 @@
     "Customer support assistant",
     "Operations assistant"
   ],
-  "tone": "Professional, practical, concise, transparent about uncertainty"
+  "tone": "Professional, practical, concise, transparent about uncertainty",
+  "version": 3,
+  "operating_model": {
+    "storefront": "Customer shopping site with support AI",
+    "backend": "Node.js API + Supabase PostgreSQL persistence",
+    "owner_dashboard": "Business operations, analytics, approvals and AI controls"
+  },
+  "ai_departments": [
+    {
+      "id": "order",
+      "name": "Order Agent",
+      "scope": "order verification, status, fulfillment coordination",
+      "current_state": "approval_gated"
+    },
+    {
+      "id": "supplier",
+      "name": "Supplier Agent",
+      "scope": "supplier research and fulfillment routing",
+      "current_state": "Qikink supported; other suppliers require integration"
+    },
+    {
+      "id": "research",
+      "name": "Product Research Agent",
+      "scope": "demand, competition, seasonality and product opportunities",
+      "current_state": "AI analysis; live research provider required for live market claims"
+    },
+    {
+      "id": "catalog",
+      "name": "Catalog Agent",
+      "scope": "product drafts, descriptions, SEO fields and publishing proposals",
+      "current_state": "approval_gated"
+    },
+    {
+      "id": "pricing",
+      "name": "Pricing & Margin Agent",
+      "scope": "margin-safe pricing calculations",
+      "current_state": "simulator + AI draft; no silent price changes"
+    },
+    {
+      "id": "offers",
+      "name": "Offers Agent",
+      "scope": "discount/coupon/bundle simulations",
+      "current_state": "draft/simulator; no silent promotion changes"
+    },
+    {
+      "id": "support",
+      "name": "Support Agent",
+      "scope": "customer product/order support and human handoff",
+      "current_state": "website AI + support ticket inbox"
+    },
+    {
+      "id": "finance",
+      "name": "Finance Agent",
+      "scope": "sales, supplier cost and estimated gross contribution reporting",
+      "current_state": "recorded-data analytics; tax/gateway/ad cost integrations pending"
+    },
+    {
+      "id": "owner_assistant",
+      "name": "Owner Assistant",
+      "scope": "business Q&A and reporting from authoritative store data",
+      "current_state": "dashboard AI chat"
+    }
+  ],
+  "governance": {
+    "global_kill_switch": true,
+    "default_mode": "APPROVAL_ONLY",
+    "state_changing_actions_require_owner_approval": true,
+    "margin_floor_pct": 25,
+    "max_discount_pct": 10,
+    "max_refund_inr": 500,
+    "note": "AUTO/LIMITED_AUTO are governance settings; payment, refund, supplier order and public publishing should remain explicitly integrated and approved before enabling."
+  },
+  "analytics": {
+    "tracked_events": [
+      "page_view",
+      "product_view",
+      "add_to_cart",
+      "checkout_start",
+      "purchase_success"
+    ],
+    "dashboard_window_days": 7,
+    "note": "Analytics deliberately avoids collecting unnecessary personal data in event metadata."
+  },
+  "security": {
+    "admin_recovery": "Gmail OTP + recovery key",
+    "secrets": "Server environment variables only",
+    "audit_log": "Admin actions and AI executions recorded when Supabase is available",
+    "customer_ai_scope": "Public product facts plus the signed-in customer's own order/shipping context"
+  }
 }

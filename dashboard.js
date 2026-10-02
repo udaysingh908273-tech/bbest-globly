@@ -60,7 +60,7 @@ async function overview(){
       "<p class=\"muted\" style=\"margin-bottom:0\">Traffic, conversion rate and customer acquisition cost are not available yet because site analytics/ad spend tracking is not connected.</p>"+
     "</div>"+
     "<div class=\"section-card\"><div class=\"section-head\"><div><h2>Operational Readiness</h2><div class=\"muted\">Live connection checks for the admin workspace.</div></div><button class=\"btn soft\" id=\"refreshReadiness\">Refresh</button></div>"+
-      "<div id=\"readinessGrid\" class=\"grid\" style=\"grid-template-columns:repeat(3,minmax(0,1fr))\"><div class=\"notice\">Checking integrations…</div></div>"+
+      "<div id=\"readinessGrid\" class=\"grid readiness-grid\"><div class=\"notice\">Checking integrations…</div></div>"+
     "</div>"+
     "<div class=\"section-card\"><div class=\"section-head\"><h2>Quick actions</h2></div><div class=\"actions\">"+
       "<button class=\"btn soft\" data-go=\"products\">Add product</button>"+

@@ -1043,7 +1043,7 @@ async function buildCustomerMarketingIntelligence(days=30){
     const profile=customers.find(x=>x.id===c.customer_id);if(!profile)continue;
     const mine=orders.filter(o=>o.customer_id===profile.id||(o.customer?.email&&String(o.customer.email).toLowerCase()===String(profile.email).toLowerCase()));
     const top=Object.entries(c.product_scores).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([pid,score])=>{const p=products.find(x=>x.id===pid);return p?{product_id:pid,name:p.name,category:p.category,score,price_inr:Number(p.price_inr||0)}:null}).filter(Boolean);
-    output.push({customer_id:profile.id,name:profile.name,email:profile.email,marketing_opt_in:profile.marketing_opt_in===true,order_count:mine.length,recent_spend_inr:mine.filter(o=>o.status!=='CANCELLED').reduce((n,o)=>n+Number(o.totals?.total_inr||0),0),intent:{score:Object.values(c.product_scores).reduce((n,v)=>n+Number(v||0),0),views:c.views,add_to_cart:c.add_to_cart,checkouts:c.checkouts,searches:[...new Set(c.searches)].slice(0,8)},top_interests:top,last_seen_at:c.last_seen_at,eligible_for_personalized_offer:profile.marketing_opt_in===true&&top.length>0});
+    output.push({customer_id:profile.id,name:profile.name,marketing_opt_in:profile.marketing_opt_in===true,order_count:mine.length,recent_spend_inr:mine.filter(o=>o.status!=='CANCELLED').reduce((n,o)=>n+Number(o.totals?.total_inr||0),0),intent:{score:Object.values(c.product_scores).reduce((n,v)=>n+Number(v||0),0),views:c.views,add_to_cart:c.add_to_cart,checkouts:c.checkouts,searches:[...new Set(c.searches)].slice(0,8)},top_interests:top,last_seen_at:c.last_seen_at,eligible_for_personalized_offer:profile.marketing_opt_in===true&&top.length>0});
   }
   output.sort((a,b)=>b.intent.score-a.intent.score);
   return {period_days:Number(days||30),customers:output.slice(0,200),note:'Intent score uses product views, searches, carts, checkouts and purchases. It does not infer sensitive traits.'};
@@ -1413,7 +1413,7 @@ const server = http.createServer(async (req, res) => {
         channel,
         public_products:publicProducts,
         payment_configuration:{online_enabled:paymentsReady,cod_enabled:loadSiteConfig().features?.cod!==false},
-        customer:customer?{name:customer.name,email:customer.email,phone:customer.phone}:null,
+        customer:customer?{name:customer.name}:null,
         customer_orders:customerOrders,
         conversation:Array.isArray(b.context?.conversation)?b.context.conversation.slice(-16):[]
       };

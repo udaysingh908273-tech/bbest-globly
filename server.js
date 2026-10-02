@@ -598,6 +598,17 @@ async function notifyCustomer(customer,message){
   }
   return results;
 }
+async function notifyOrderStatus(order,status){
+  if(!order?.customer)return {results:[]};
+  const text={
+    CONFIRMED:'Your BBest Globly order '+order.id+' is confirmed.',
+    SHIPPED:'Your BBest Globly order '+order.id+' has shipped. Tracking will update when available.',
+    DELIVERED:'Your BBest Globly order '+order.id+' has been delivered.',
+    CANCELLED:'Your BBest Globly order '+order.id+' has been cancelled. Please contact support if you need help.'
+  }[status]||('Your BBest Globly order '+order.id+' status is now '+status+'.');
+  return {results:await notifyCustomer(order.customer,text)};
+}
+
 async function liveResearch(query){
   if(!RESEARCH_API_URL||!RESEARCH_API_KEY)throw new Error('Live research provider is not configured');
   const d=await externalJson(RESEARCH_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+RESEARCH_API_KEY},body:JSON.stringify({query:String(query||'').slice(0,3000),market:'IN',language:'en',return_sources:true})});
@@ -1614,7 +1625,8 @@ const server = http.createServer(async (req, res) => {
           const rr=await razorpayRefund(order.payment.razorpay_payment_id,amount,{order_id:order.id,reason:String(b.reason||'')});gatewayRef=rr?.id||null;status='PROCESSED';
         }
         await supabaseRequest('refunds',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([{id,order_id:order.id,return_id:b.return_id||null,amount_inr:amount,reason:String(b.reason||'').slice(0,500),status,gateway:'razorpay',gateway_ref:gatewayRef}])});
-        await auditAdmin(adminRole,'CREATE_REFUND','refund',id,{order_id:order.id,amount_inr:amount,status});return json(res,201,{ok:true,id,status,gateway_ref:gatewayRef});
+        let notification=null;try{notification=await notifyCustomer(order.customer,'Your BBest Globly refund for order '+order.id+' is '+status.toLowerCase()+'. Amount: ₹'+amount.toLocaleString('en-IN')+'.')}catch(e){notification={error:e.message}}
+        await auditAdmin(adminRole,'CREATE_REFUND','refund',id,{order_id:order.id,amount_inr:amount,status,notification});return json(res,201,{ok:true,id,status,gateway_ref:gatewayRef,notification});
       }
       if (p === '/api/admin/finance/reconciliation' && req.method === 'GET') {
         if(!supabaseReady)return json(res,200,{sales_inr:0,refunds_inr:0,ad_spend_inr:0,expenses_inr:0,gst_output_inr:0,net_before_tax_inr:0});
@@ -1977,9 +1989,10 @@ const server = http.createServer(async (req, res) => {
         if (!o) return json(res, 404, { error: 'order not found' });
         o.status = b.status; o.status_updated = new Date().toISOString();
         saveOrders(orders);
-        await auditAdmin('admin','UPDATE_ORDER_STATUS','order',b.id,{status:b.status});
+        let notification=null;try{notification=await notifyOrderStatus(o,b.status)}catch(e){notification={error:e.message}}
+        await auditAdmin('admin','UPDATE_ORDER_STATUS','order',b.id,{status:b.status,notification});
         console.log('[admin] order', b.id, '→', b.status);
-        return json(res, 200, { ok: true, id: b.id, status: b.status });
+        return json(res, 200, { ok: true, id: b.id, status: b.status, notification });
       }
       return json(res, 404, { error: 'unknown admin route' });
     }

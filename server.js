@@ -279,7 +279,7 @@ async function syncJsonFile(file, data) {
     const rows=(Array.isArray(data)?data:[]).map(x=>({...x,created:x.created||new Date().toISOString()}));
     if(rows.length) await supabaseRequest('orders?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(rows)});
   } else if (file === 'customers.json') {
-    const rows=(Array.isArray(data)?data:[]).map(x=>({id:x.id,name:x.name,email:x.email,phone:x.phone||'',pass:x.pass,salt:x.salt,created:x.created||new Date().toISOString()}));
+    const rows=(Array.isArray(data)?data:[]).map(x=>({id:x.id,name:x.name,email:x.email,phone:x.phone||'',pass:x.pass,salt:x.salt,marketing_opt_in:x.marketing_opt_in===true,marketing_opt_in_at:x.marketing_opt_in_at||null,created:x.created||new Date().toISOString()}));
     if(rows.length) await supabaseRequest('customers?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(rows)});
   } else if (file === 'site_config.json') {
     await supabaseRequest('site_config?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify([{id:'default',config:data,updated_at:new Date().toISOString()}])});

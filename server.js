@@ -41,10 +41,6 @@ const loadSiteConfig = () => readJSON('site_config.json', {
   hero:{kicker:'✦ New arrivals',title:'Everyday upgrades, curated for India & the world.',subtitle:'Trending tech, wellness and home picks.'},
   theme:{accent:'#4f46e5'}, features:{cod:true,tracking:true}
 });
-const loadBusinessStrategyKnowledge = () => readJSON('business_strategy_knowledge.json', {
-  version:'fallback', role:'BBest Globly AI Strategic Business Manager', principles:[], operating_cycle:{}, product_lifecycle:{}, demand_signal_hierarchy:{}, pricing_strategy:{}, discount_strategy:{}, inventory_strategy:{}, research_strategy:{}, marketing_strategy:{}, customer_strategy:{}, decision_matrix:{}, confidence:{}, governance:{}
-});
-
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript',
   '.json': 'application/json', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -982,7 +978,6 @@ function safeJson(text) {
 function currentAIContext(extra={}) {
   return {
     business_knowledge: loadBusinessKnowledge(),
-    business_strategy_knowledge: loadBusinessStrategyKnowledge(),
     site_config: loadSiteConfig(),
     products: loadCatalog().map(x=>({
       id:x.id,name:x.name,category:x.category,price_inr:x.price_inr,
@@ -1105,7 +1100,7 @@ async function askAI(message, context = {}, task = 'general') {
     'Distinguish REAL DATA, AI ANALYSIS, AI RECOMMENDATION and NEEDS OWNER APPROVAL.',
     'Public product publishing, deletion, major price changes, public site redesigns and paid advertising require owner approval.',
     'For marketing work, customer intent data may be used only when the customer has opted in to personalized marketing.',
-    'Use business_strategy_knowledge as the strategic operating playbook for product lifecycle, pricing, discounts, inventory, research and marketing decisions. Never invent live market data. State evidence, assumptions, confidence and approval needs. Be practical and concise.'
+    'Be practical and concise.'
   ].join(' ');
   const user=JSON.stringify({task,message,context:currentAIContext({...context,customer_support_knowledge:supportMode?buildCustomerSupportKnowledge():undefined})});
   return {configured:true,reply:await callAI([{role:'system',content:system},{role:'user',content:user}])};
@@ -1125,7 +1120,7 @@ async function agentCommand(command) {
   const system = [
     'You are the BBest Globly Agentic Business Manager.',
     'Act like a cross-functional ecommerce operations team: orders, suppliers, product research, catalog, pricing, offers, support, finance and owner reporting.',
-    'Plan concrete business actions from the owner request using ONLY supplied store data, verified provider data and business knowledge. Use business strategy knowledge for product lifecycle, pricing, discounts, inventory, research and marketing decisions.',
+    'Plan concrete business actions from the owner request using ONLY supplied store data and business knowledge.',
     'Never fabricate live market data, supplier facts, sales, stock, ad performance, customer facts or delivery promises.',
     'Return JSON ONLY with this exact shape:',
     '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status|create_offer|create_customer_offer","payload":{},"reason":"string","requiresApproval":true}]}',
@@ -1874,30 +1869,6 @@ const server = http.createServer(async (req, res) => {
 
       if (p === '/api/admin/finance/summary' && req.method === 'GET') {
         return json(res,200,await buildFinanceSummary());
-      }
-
-      if (p === '/api/admin/business/intelligence' && req.method === 'GET') {
-        const days=Math.max(7,Math.min(90,Number(url.searchParams.get('days')||30)));
-        const since=new Date(Date.now()-days*86400000);
-        const orders=loadOrders().filter(o=>o.status!=='CANCELLED'&&new Date(o.created||0)>=since);
-        const catalog=loadCatalog();
-        const productMetrics=catalog.map(p=>{
-          let units=0,sales=0;
-          for(const o of orders) for(const item of (o.items||[])) if(item.id===p.id){
-            const q=Math.max(0,Number(item.qty)||0); units+=q; sales+=q*Number(item.price_inr||p.price_inr||0);
-          }
-          const cost=Number(p.supplier_cost_inr||0);
-          const gross=sales-(cost*units);
-          return {id:p.id,name:p.name,category:p.category||'',price_inr:Number(p.price_inr||0),supplier_cost_inr:cost,stock:Number(p.stock||0),units_sold:units,sales_inr:sales,estimated_gross_profit_inr:gross,estimated_gross_margin_pct:sales>0?(gross/sales)*100:null};
-        });
-        return json(res,200,{
-          period_days:days,
-          generated_at:new Date().toISOString(),
-          business_strategy:loadBusinessStrategyKnowledge(),
-          business_snapshot:{active_orders:orders.length,sales_inr:orders.reduce((s,o)=>s+Number(o.totals?.total_inr||0),0),active_catalogue_products:catalog.filter(x=>x.published!==false).length},
-          product_metrics:productMetrics,
-          note:'Internal store intelligence only. External market movement requires a configured research provider.'
-        });
       }
 
       if (p === '/api/admin/analytics/summary' && req.method === 'GET') {

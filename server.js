@@ -1011,6 +1011,30 @@ function buildCustomerSupportKnowledge(){
   };
 }
 
+async function buildCustomerMarketingIntelligence(days=30){
+  if(!supabaseReady) return {customers:[],note:'Supabase is required for customer intent analytics.'};
+  const since=new Date(Date.now()-Math.max(1,Number(days||30))*86400000).toISOString();
+  const rows=await supabaseRequest('analytics_events?select=customer_id,event_name,product_id,metadata,created_at&customer_id=not.is.null&created_at=gte.'+encodeURIComponent(since)+'&order=created_at.desc&limit=5000');
+  const customers=readJSON('customers.json',[]),products=loadCatalog(),orders=loadOrders(),byCustomer={};
+  for(const ev of (Array.isArray(rows)?rows:[])){
+    const cid=String(ev.customer_id||''); if(!cid)continue;
+    const c=byCustomer[cid]||(byCustomer[cid]={customer_id:cid,event_count:0,last_seen_at:null,product_scores:{},searches:[],add_to_cart:0,checkouts:0,views:0});
+    c.event_count++; if(!c.last_seen_at||new Date(ev.created_at)>new Date(c.last_seen_at))c.last_seen_at=ev.created_at;
+    if(ev.event_name==='product_view')c.views++; if(ev.event_name==='add_to_cart')c.add_to_cart++; if(ev.event_name==='checkout_start')c.checkouts++;
+    const pid=String(ev.product_id||''); if(pid){const score={purchase_success:5,checkout_start:4,add_to_cart:3,product_view:1}[ev.event_name]||0;c.product_scores[pid]=(c.product_scores[pid]||0)+score}
+    if(ev.event_name==='product_search'){const q=String(ev.metadata?.query||'').trim().slice(0,120);if(q)c.searches.push(q)}
+  }
+  const output=[];
+  for(const c of Object.values(byCustomer)){
+    const profile=customers.find(x=>x.id===c.customer_id);if(!profile)continue;
+    const mine=orders.filter(o=>o.customer_id===profile.id||(o.customer?.email&&String(o.customer.email).toLowerCase()===String(profile.email).toLowerCase()));
+    const top=Object.entries(c.product_scores).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([pid,score])=>{const p=products.find(x=>x.id===pid);return p?{product_id:pid,name:p.name,category:p.category,score,price_inr:Number(p.price_inr||0)}:null}).filter(Boolean);
+    output.push({customer_id:profile.id,name:profile.name,email:profile.email,marketing_opt_in:profile.marketing_opt_in===true,order_count:mine.length,recent_spend_inr:mine.filter(o=>o.status!=='CANCELLED').reduce((n,o)=>n+Number(o.totals?.total_inr||0),0),intent:{score:Object.values(c.product_scores).reduce((n,v)=>n+Number(v||0),0),views:c.views,add_to_cart:c.add_to_cart,checkouts:c.checkouts,searches:[...new Set(c.searches)].slice(0,8)},top_interests:top,last_seen_at:c.last_seen_at,eligible_for_personalized_offer:profile.marketing_opt_in===true&&top.length>0});
+  }
+  output.sort((a,b)=>b.intent.score-a.intent.score);
+  return {period_days:Number(days||30),customers:output.slice(0,200),note:'Intent score uses product views, searches, carts, checkouts and purchases. It does not infer sensitive traits.'};
+}
+
 async function askAI(message, context = {}, task = 'general') {
   const system = [
     'You are the customer-facing AI Support Specialist for BBest Globly.',
@@ -1215,7 +1239,7 @@ const server = http.createServer(async (req, res) => {
       const salt = newSalt();
       const cust = {
         id: 'CUS-' + crypto.randomBytes(4).toString('hex').toUpperCase(),
-        name, email, phone, pass: hashPw(pw, salt), salt, created: new Date().toISOString()
+        name, email, phone, pass: hashPw(pw, salt), salt, marketing_opt_in:false, marketing_opt_in_at:null, created: new Date().toISOString()
       };
       customers.push(cust); writeJSON('customers.json', customers);
       const token = startSession('customer', cust.id);
@@ -1246,7 +1270,20 @@ const server = http.createServer(async (req, res) => {
       if (!a || !a.session.customerId) return json(res, 401, { error: 'not logged in' });
       const c = readJSON('customers.json', []).find(x => x.id === a.session.customerId);
       if (!c) return json(res, 401, { error: 'account not found' });
-      return json(res, 200, { name: c.name, email: c.email, phone: c.phone });
+      return json(res, 200, { name: c.name, email: c.email, phone: c.phone, marketing_opt_in: c.marketing_opt_in===true });
+    }
+
+    if (p === '/api/auth/marketing-preferences' && req.method === 'GET') {
+      const a=getAuth(req);if(!a?.session?.customerId)return json(res,401,{error:'not logged in'});
+      const c=readJSON('customers.json',[]).find(x=>x.id===a.session.customerId);if(!c)return json(res,404,{error:'account not found'});
+      return json(res,200,{marketing_opt_in:c.marketing_opt_in===true});
+    }
+    if (p === '/api/auth/marketing-preferences' && req.method === 'PATCH') {
+      const a=getAuth(req);if(!a?.session?.customerId)return json(res,401,{error:'not logged in'});
+      const b=await readBody(req),customers=readJSON('customers.json',[]),c=customers.find(x=>x.id===a.session.customerId);
+      if(!c)return json(res,404,{error:'account not found'});
+      const optIn=b.marketing_opt_in===true;c.marketing_opt_in=optIn;c.marketing_opt_in_at=optIn?new Date().toISOString():null;writeJSON('customers.json',customers);
+      return json(res,200,{ok:true,marketing_opt_in:optIn});
     }
 
     /* ---------------- orders ---------------- */
@@ -1352,6 +1389,9 @@ const server = http.createServer(async (req, res) => {
           id:x.id,status:x.status,total_inr:x.totals?.total_inr,created:x.created,
           items:(x.items||[]).map(i=>({id:i.id,name:i.name,qty:i.qty}))
         }));
+        if(/marketing|offer|customer|campaign/i.test(String(b.task||'')+' '+String(b.message||''))){
+          try{context.customer_marketing_intelligence=await buildCustomerMarketingIntelligence(30)}catch(e){context.customer_marketing_intelligence={customers:[],error:e.message}}
+        }
       }
       try {
         const result = await askAI(String(b.message||''), context, String(b.task||'customer_support'));
@@ -1364,7 +1404,7 @@ const server = http.createServer(async (req, res) => {
     /* ---------------- public analytics / support ---------------- */
     if (p === '/api/analytics/event' && req.method === 'POST') {
       const b=await readBody(req);
-      const allowed=['page_view','product_view','add_to_cart','checkout_start','purchase_success'];
+      const allowed=['page_view','product_view','add_to_cart','checkout_start','purchase_success','product_search'];
       const event_name=String(b.event_name||'');
       if(!allowed.includes(event_name)) return json(res,400,{error:'unsupported analytics event'});
       const session_id=String(b.session_id||'').trim().slice(0,80);
@@ -1374,7 +1414,7 @@ const server = http.createServer(async (req, res) => {
         method:'POST',
         headers:{'Prefer':'return=minimal'},
         body:JSON.stringify({
-          event_name,session_id,page:String(b.page||'').slice(0,180)||null,
+          event_name,session_id,customer_id:getAuth(req)?.session?.customerId||null,page:String(b.page||'').slice(0,180)||null,
           product_id:String(b.product_id||'').slice(0,120)||null,
           order_id:String(b.order_id||'').slice(0,120)||null,
           metadata:safeAnalyticsMetadata(b.metadata)
@@ -2021,6 +2061,10 @@ const server = http.createServer(async (req, res) => {
           customers: readJSON('customers.json', []).length
         });
       }
+      if (p === '/api/admin/customer-intelligence' && req.method === 'GET') {
+        try{return json(res,200,await buildCustomerMarketingIntelligence(30))}catch(e){return json(res,502,{error:e.message})}
+      }
+
       if (p === '/api/admin/customers' && req.method === 'GET') {
         const customers=readJSON('customers.json',[]);
         const orders=loadOrders();

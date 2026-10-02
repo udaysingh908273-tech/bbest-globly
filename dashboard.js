@@ -19,8 +19,8 @@ async function api(path,opt={}){
 }
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function money(n){return '₹'+Number(n||0).toLocaleString('en-IN')}
 async function refresh(){[products,orders,customers]=await Promise.all([api('/api/admin/products'),api('/api/admin/orders'),api('/api/admin/customers')])}
-function setView(v){currentView=v;$$('.view').forEach(x=>x.classList.toggle('hidden',x.id!==v));$$('.nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.view===v));const t={overview:'Business Overview',products:'Product Management',orders:'Orders',customers:'Customers',suppliers:'Supplier / Dropshipping',research:'AI Product Research',pricing:'Pricing & Offers',marketing:'AI Marketing',seo:'AI SEO Manager',support:'Customer Support',finance:'Finance & Profit',controls:'AI Control Center',security:'Security & Audit',approvals:'Approval Center'};$('#pageTitle').textContent=t[v]||'Business Overview';render()}
-function render(){if(!token)return;if(currentView==='overview')overview();if(currentView==='products')productView();if(currentView==='orders')orderView();if(currentView==='customers')customerView();if(currentView==='suppliers')supplierView();if(currentView==='research')researchView();if(currentView==='pricing')pricingView();if(currentView==='marketing')marketingView();if(currentView==='seo')seoView();if(currentView==='support')supportView();if(currentView==='finance')financeView();if(currentView==='controls')controlsView();if(currentView==='security')securityView();if(currentView==='approvals')approvalView()}
+function setView(v){currentView=v;$$('.view').forEach(x=>x.classList.toggle('hidden',x.id!==v));$$('.nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.view===v));const t={overview:'Business Overview',products:'Product Management',orders:'Orders',customers:'Customers',suppliers:'Supplier / Dropshipping',research:'AI Product Research',strategy:'AI Strategy Center',pricing:'Pricing & Offers',marketing:'AI Marketing',seo:'AI SEO Manager',support:'Customer Support',finance:'Finance & Profit',controls:'AI Control Center',security:'Security & Audit',approvals:'Approval Center'};$('#pageTitle').textContent=t[v]||'Business Overview';render()}
+function render(){if(!token)return;if(currentView==='overview')overview();if(currentView==='products')productView();if(currentView==='orders')orderView();if(currentView==='customers')customerView();if(currentView==='suppliers')supplierView();if(currentView==='research')researchView();if(currentView==='strategy')strategyView();if(currentView==='pricing')pricingView();if(currentView==='marketing')marketingView();if(currentView==='seo')seoView();if(currentView==='support')supportView();if(currentView==='finance')financeView();if(currentView==='controls')controlsView();if(currentView==='security')securityView();if(currentView==='approvals')approvalView()}
 async function overview(){
   const active=orders.filter(o=>o.status!=="CANCELLED");
   const booked=active.reduce((s,o)=>s+Number(o.totals?.total_inr||0),0);
@@ -267,6 +267,58 @@ async function securityView(){
   await load();
 }
 
+async function strategyView(){
+  const box=$('#strategy');
+  box.innerHTML='<div class="section-card"><div class="section-head"><div><h2>AI Strategy Center</h2><div class="muted">Decision layer for product, pricing, discounts, inventory, marketing and market movement.</div></div><div class="actions"><button class="btn soft" id="strategyRefresh">Refresh data</button><button class="btn primary" id="strategyBrief">Generate AI Brief</button></div></div><div class="grid stats" id="strategyStats"><div class="notice">Loading intelligence…</div></div><div id="strategySearches" class="table-wrap" style="margin-top:14px"></div></div><div class="section-card"><div class="section-head"><div><h2>Product Decision Radar</h2><div class="muted">Internal signals from the selected period. External market data appears only when a connector is configured.</div></div></div><div class="table-wrap"><table class="tbl"><thead><tr><th>Product</th><th>Views</th><th>Cart rate</th><th>Units</th><th>Trend</th><th>Gross margin</th><th>Stock cover</th></tr></thead><tbody id="strategyProducts"><tr><td colspan="7">Loading…</td></tr></tbody></table></div></div><div class="section-card"><div class="section-head"><div><h2>AI Decision Brief</h2><div class="muted">The AI must show evidence, confidence, economics, risks and approval requirements before proposing changes.</div></div></div><div id="strategyOut" class="ai-output">No strategy brief generated yet.</div></div><div class="section-card"><div class="section-head"><div><h2>Ask the Strategic Manager</h2><div class="muted">Examples: “Which products should enter a test?”, “Which prices need review?”, “Where should I avoid discounts?”</div></div></div><textarea id="strategyCmd" class="command" placeholder="Ask for a business strategy analysis…"></textarea><div class="actions" style="margin-top:10px"><button class="btn primary" id="strategyAsk">Analyze</button><button class="btn soft" id="strategyAgent">Create approval-ready plan</button></div><div id="strategyAskOut" class="ai-output">Ready.</div></div>';
+  async function load(){
+    const stats=$('#strategyStats'),rows=$('#strategyProducts'),searchBox=$('#strategySearches');
+    stats.innerHTML='<div class="notice">Loading intelligence…</div>';rows.innerHTML='<tr><td colspan="7">Loading…</td></tr>';
+    try{
+      const d=await api('/api/admin/business/intelligence?days=30');
+      const s=d.business_snapshot||{},channels=d.future_channels||{};
+      stats.innerHTML=[
+        ['30d Sales',money(s.sales_inr)],
+        ['Active Orders',s.active_orders||0],
+        ['Active Products',s.active_catalogue_products||0],
+        ['Refunds',money(s.refunds_inr)],
+        ['Ad Spend',money(s.ad_spend_inr)],
+        ['Live External Research',channels.google_merchant_or_ads||channels.meta?'CONNECTED':'NOT CONNECTED']
+      ].map(x=>'<div class="stat"><div class="label">'+esc(String(x[0]))+'</div><div class="value" style="font-size:1.15rem">'+esc(String(x[1]))+'</div></div>').join('');
+      const pm=d.product_metrics||[];
+      rows.innerHTML=pm.length?pm.map(p=>{
+        const trend=p.unit_change_pct==null?'—':(p.unit_change_pct>20?'↑ '+p.unit_change_pct.toFixed(0)+'%':p.unit_change_pct<-20?'↓ '+Math.abs(p.unit_change_pct).toFixed(0)+'%':'→ '+p.unit_change_pct.toFixed(0)+'%');
+        const margin=p.estimated_gross_margin_on_recorded_sales_pct==null?'—':p.estimated_gross_margin_on_recorded_sales_pct.toFixed(1)+'%';
+        const cover=p.stock_coverage_days==null?'—':p.stock_coverage_days.toFixed(1)+'d';
+        return '<tr><td><strong>'+esc(p.name)+'</strong><div class="muted">'+esc(p.category||'')+'</div></td><td>'+p.views+'</td><td>'+(p.add_to_cart_rate==null?'—':p.add_to_cart_rate.toFixed(1)+'%')+'</td><td>'+p.units_sold+'</td><td>'+trend+'</td><td>'+margin+'</td><td>'+cover+'</td></tr>';
+      }).join(''):'<tr><td colspan="7">No product performance data yet.</td></tr>';
+      const searches=d.search_demand||[];
+      searchBox.innerHTML='<h3 style="margin:0 0 8px">Customer search demand</h3>'+(searches.length?'<table class="tbl"><thead><tr><th>Query</th><th>Search events</th></tr></thead><tbody>'+searches.map(x=>'<tr><td>'+esc(x.query)+'</td><td>'+x.count+'</td></tr>').join('')+'</tbody></table>':'<div class="notice">No product_search events recorded yet.</div>');
+    }catch(e){
+      stats.innerHTML='<div class="notice">Strategy intelligence unavailable: '+esc(e.message)+'</div>';
+      rows.innerHTML='<tr><td colspan="7">No data.</td></tr>';searchBox.innerHTML='';
+    }
+  }
+  $('#strategyRefresh').onclick=load;
+  $('#strategyBrief').onclick=async()=>{
+    const out=$('#strategyOut');out.textContent='Generating evidence-based strategy brief…';
+    try{
+      const d=await api('/api/ai/chat',{method:'POST',body:{message:'Create the 30-day BBest Globly strategic business brief. Cover product lifecycle, what to research/add, what to optimize or stop reviewing, pricing and margin review, discount guardrails, inventory, customer/search demand, marketing opportunities, unknowns, confidence and exact owner approvals needed. Use only current store data plus the strategic knowledge base. Do not invent external market data.',task:'business_strategy',context:{products,orders}}});
+      out.textContent=d.reply||'No brief returned.';
+    }catch(e){out.textContent='AI error: '+e.message}
+  };
+  $('#strategyAsk').onclick=async()=>{
+    const q=$('#strategyCmd').value.trim(),out=$('#strategyAskOut');if(!q)return;
+    out.textContent='Analyzing…';
+    try{const d=await api('/api/ai/chat',{method:'POST',body:{message:q,task:'business_strategy',context:{products,orders}}});out.textContent=d.reply||'No response';}
+    catch(e){out.textContent='AI error: '+e.message}
+  };
+  $('#strategyAgent').onclick=async()=>{
+    const q=$('#strategyCmd').value.trim();if(!q){$('#strategyAskOut').textContent='Enter a strategic command first.';return}
+    $('#strategyAskOut').textContent='Creating approval-ready plan…';
+    try{const d=await api('/api/admin/agent/command',{method:'POST',body:{command:q}});$('#strategyAskOut').textContent=(d.reply||'Plan created.')+(d.actions?.length?'\n\nApproval requests: '+d.actions.length+'. Review them in Approval Center.':'\n\nNo state-changing action was proposed.');if(d.actions?.length){setView('approvals')}}catch(e){$('#strategyAskOut').textContent='Agent error: '+e.message}
+  };
+  await load();
+}
 function researchView(){$('#research').innerHTML='<div class="ai-box"><h2>Live Product Research</h2><p>Live provider data is kept separate from AI analysis.</p><textarea id="researchCmd" class="command" placeholder="Research products, demand, competition and seasonality…"></textarea><div class="actions"><button id="runResearch" class="btn primary">Live Research</button><button id="runResearchAI" class="btn soft">AI Analysis</button></div><div id="researchOut" class="ai-output">No research run yet.</div></div>';$('#runResearch').onclick=async()=>{const o=$('#researchOut');o.textContent='Calling live provider…';try{const d=await api('/api/admin/research/live',{method:'POST',body:{query:$('#researchCmd').value}});o.textContent=JSON.stringify(d.data||d,null,2)}catch(e){o.textContent='Live research unavailable: '+e.message}};$('#runResearchAI').onclick=async()=>{const o=$('#researchOut');o.textContent='AI analysis…';try{const d=await api('/api/ai/chat',{method:'POST',body:{message:$('#researchCmd').value,task:'product_research',context:{products}}});o.textContent=d.reply||'No result'}catch(e){o.textContent=e.message}}}function marketingView(){const seasons=['Diwali','Holi','Eid','Christmas','New Year','Summer','Monsoon','Winter'];$('#marketing').innerHTML='<div class="section-card"><div class="section-head"><div><h2>AI Marketing Manager</h2><div class="muted">Prepare campaigns using season, festivals, trends and actual products.</div></div></div><div class="toolbar"><select id="season">'+seasons.map(x=>'<option>'+x+'</option>').join('')+'</select><button class="btn primary" id="mk">Prepare campaign</button></div><div id="mkout" class="ai-output">Select an occasion and generate a draft.</div></div>';$('#mk').onclick=async()=>{const o=$('#mkout');o.textContent='Preparing…';try{const d=await api('/api/ai/chat',{method:'POST',body:{message:'Prepare a marketing campaign draft for '+$('#season').value+' using actual BBest Globly products and clearly label assumptions.',task:'marketing',context:{products,orders}}});o.textContent=d.reply||'No result'}catch(e){o.textContent='AI not configured: '+e.message}}}
 function seoView(){const opts=products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('');$('#seo').innerHTML='<div class="ai-box"><h2>🧠 AI SEO Manager</h2><p>Generate SEO drafts from real product data.</p><select id="seoP" class="command" style="color:#111">'+opts+'</select><button id="seoBtn" class="btn primary">Generate SEO</button><div id="seoOut" class="ai-output">Ready.</div></div>';$('#seoBtn').onclick=async()=>{const p=products.find(x=>x.id===$('#seoP').value),o=$('#seoOut');o.textContent='Generating…';try{const d=await api('/api/ai/chat',{method:'POST',body:{message:'Create SEO title, meta description, slug, keywords and FAQ for this product. Product: '+JSON.stringify(p),task:'seo',context:{product:p}}});o.textContent=d.reply||'No result'}catch(e){o.textContent='AI not configured: '+e.message}}}
 async function supportView(){

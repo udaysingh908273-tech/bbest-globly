@@ -195,6 +195,32 @@ const json = (res, code, obj) => send(res, code, JSON.stringify(obj));
 const hashPw = (pw, salt) => crypto.scryptSync(String(pw), salt, 32).toString('hex');
 const newSalt = () => crypto.randomBytes(16).toString('hex');
 const newToken = () => crypto.randomBytes(32).toString('hex');
+async function getAdminCredentialRow() {
+  if (!supabaseReady) return null;
+  try {
+    const rows=await supabaseRequest('admin_credentials?select=id,password_hash,salt&id=eq.default');
+    return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  } catch(e) { return null; }
+}
+async function verifyAdminPassword(password) {
+  const db=await getAdminCredentialRow();
+  if(db) {
+    const h=hashPw(password,db.salt);
+    const a=Buffer.from(h), b=Buffer.from(db.password_hash);
+    return a.length===b.length && crypto.timingSafeEqual(a,b);
+  }
+  return process.env.ADMIN_PASSWORD ? String(password)===process.env.ADMIN_PASSWORD : null;
+}
+async function resetAdminPassword(newPassword) {
+  if(!supabaseReady) throw new Error('Password recovery requires Supabase to be configured');
+  const salt=newSalt(), hash=hashPw(newPassword,salt);
+  await supabaseRequest('admin_credentials?on_conflict=id',{
+    method:'POST',
+    headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
+    body:JSON.stringify([{id:'default',password_hash:hash,salt,updated_at:new Date().toISOString()}])
+  });
+}
+
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -905,14 +931,28 @@ const server = http.createServer(async (req, res) => {
     }
 
     /* ---------------- admin ---------------- */
+    if (p === '/api/admin/forgot-password' && req.method === 'POST') {
+      const b=await readBody(req);
+      const recoveryKey=String(b.recovery_key||'');
+      const newPassword=String(b.new_password||'');
+      const configuredKey=String(process.env.ADMIN_RESET_KEY||'');
+      if(!configuredKey) return json(res,503,{error:'Password recovery is not configured. Set ADMIN_RESET_KEY in Render Environment.'});
+      if(newPassword.length < 10) return json(res,400,{error:'New password must be at least 10 characters'});
+      const a=Buffer.from(recoveryKey), d=Buffer.from(configuredKey);
+      if(a.length!==d.length || !crypto.timingSafeEqual(a,d)) return json(res,403,{error:'Invalid recovery key'});
+      try {
+        await resetAdminPassword(newPassword);
+        return json(res,200,{ok:true,message:'Admin password reset successfully. You can now log in.'});
+      } catch(e) { return json(res,503,{error:e.message}); }
+    }
+
     if (p === '/api/admin/login' && req.method === 'POST') {
       const b = await readBody(req);
       const admin = readJSON('admin.json', null);
       if (!admin) return json(res, 500, { error: 'admin not configured' });
       const userOk = String(b.username || '') === admin.username;
-      const passOk = process.env.ADMIN_PASSWORD
-        ? String(b.password || '') === process.env.ADMIN_PASSWORD
-        : hashPw(String(b.password || ''), admin.salt) === admin.pass;
+      const verified = await verifyAdminPassword(String(b.password || ''));
+      const passOk = verified === true ? true : (verified === null && hashPw(String(b.password || ''), admin.salt) === admin.pass);
       if (!userOk || !passOk) return json(res, 401, { error: 'invalid credentials' });
       console.log('[admin] login ok');
       return json(res, 200, { ok: true, token: startSession('admin') });

@@ -177,6 +177,27 @@ async function approvalView(){
 function initAISidePanel(){ /* AI Manager is rendered inside Approval Center. */ }
 $$('.nav-btn').forEach(b=>b.onclick=()=>setView(b.dataset.view));
 $('#forgotBtn').onclick=async()=>{
+  const email=prompt('Enter your recovery Gmail address:');
+  if(email===null)return;
+  try{
+    const r=await fetch('/api/admin/forgot-password/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.trim()})});
+    const d=await r.json();
+    if(!r.ok)throw Error(d.error||'Could not send OTP');
+    const otp=prompt((d.message||'OTP sent.')+' Enter the 6-digit OTP:');
+    if(otp===null)return;
+    const pw=prompt('Set a new admin password (minimum 10 characters):');
+    if(pw===null)return;
+    const v=await fetch('/api/admin/forgot-password/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.trim(),otp:otp.trim(),new_password:pw})});
+    const vd=await v.json();
+    if(!v.ok)throw Error(vd.error||'Password reset failed');
+    $('#loginErr').textContent=vd.message||'Password reset successfully. You can now log in.';
+    $('#loginErr').style.color='var(--ok)';
+  }catch(e){
+    $('#loginErr').textContent=e.message;
+    $('#loginErr').style.color='var(--danger)';
+  }
+};
+$('#recoveryKeyBtn').onclick=async()=>{
   const key=prompt('Enter your ADMIN_RESET_KEY from Render Environment Variables:');
   if(key===null)return;
   const pw=prompt('Set a new admin password (minimum 10 characters):');
@@ -184,7 +205,7 @@ $('#forgotBtn').onclick=async()=>{
   try{
     const r=await fetch('/api/admin/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recovery_key:key,new_password:pw})});
     const d=await r.json();
-    if(!r.ok) throw Error(d.error||'Password reset failed');
+    if(!r.ok)throw Error(d.error||'Password reset failed');
     $('#loginErr').textContent=d.message||'Password reset successfully. Please log in.';
     $('#loginErr').style.color='var(--ok)';
   }catch(e){

@@ -1162,8 +1162,9 @@ async function buildBusinessIntelligence(days=30){
     data_quality:dataQuality,
     future_channels:{
       website:true,
-      google_merchant_or_ads:!!(process.env.GOOGLE_MERCHANT_CENTER_API_KEY||process.env.GOOGLE_ADS_DEVELOPER_TOKEN),
-      meta:!!(process.env.META_ACCESS_TOKEN),
+      research_provider:!!(RESEARCH_API_URL&&RESEARCH_API_KEY),
+      google_merchant_or_ads:false,
+      meta:false,
       supplier_feeds:!!(process.env.QIKINK_AUTH_TOKEN||process.env.SUPPLIER_API_URL)
     },
     note:'Market movement is only considered live when a connected provider supplies timestamped external data. Internal store signals are calculated from recorded analytics, orders and support data.'

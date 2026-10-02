@@ -1231,8 +1231,12 @@ const server = http.createServer(async (req, res) => {
         items, totals: { subtotal_inr: subtotal, shipping_inr: 0, total_inr: subtotal }
       };
       const orders = loadOrders(); orders.push(order); saveOrders(orders);
+      let supplierRouting=null;
+      if(supabaseReady){
+        try{supplierRouting=await routeOrderToSupplier(id,false)}catch(e){supplierRouting={status:'NO_MAPPED_SUPPLIER',message:e.message}}
+      }
       console.log('[order] placed:', id, 'total ₹' + order.totals.total_inr, order.customer_id ? '(customer ' + order.customer_id + ')' : '(guest)');
-      return json(res, 201, { ok: true, orderId: id, total_inr: order.totals.total_inr });
+      return json(res, 201, { ok: true, orderId: id, total_inr: order.totals.total_inr, supplierRouting });
     }
 
     if (p.startsWith('/api/order/') && req.method === 'GET') {

@@ -223,6 +223,21 @@ const qikinkReady = !!QIKINK_AUTH_TOKEN;
 
 let qikinkCatalogCache = { expiresAt: 0, items: [] };
 
+const QIKINK_FALLBACK_CATALOG = [
+  {name:'Male Polo | MP25',sku:'MP25',price_inr:336,category:'T-Shirts',url:'https://qikink.com/custom/collections/best-sellers/'},
+  {name:'Male Standard Crew T-Shirt | US21',sku:'US21',price_inr:179,category:'T-Shirts',url:'https://qikink.com/custom/collections/best-sellers/'},
+  {name:'Unisex Acid Wash Oversized Tee | UC61',sku:'UC61',price_inr:399,category:'T-Shirts',url:'https://qikink.com/custom/collections/best-sellers/'},
+  {name:'Unisex AOP Bomber Jacket | UA30',sku:'UA30',price_inr:788,category:'AOP Apparel',url:'https://qikink.com/custom/collections/best-sellers/'},
+  {name:'Unisex AOP Sports T-Shirt | UA51',sku:'UA51',price_inr:315,category:'AOP Apparel',url:'https://qikink.com/custom/collections/best-sellers/'},
+  {name:'Unisex Terry Oversized Tee | UT27',sku:'UT27',price_inr:315,category:'T-Shirts',url:'https://qikink.com/custom/collections/best-sellers/'},
+  {name:'Unisex Oversized Classic T-Shirt | UC22',sku:'UC22',price_inr:278,category:'T-Shirts',url:'https://qikink.com/custom/collections/best-sellers/'},
+  {name:'AOP Full Sleeve Crop Top | FC38',sku:'FC38',price_inr:350,category:'AOP Apparel',url:'https://qikink.com/custom/collections/new-products/'},
+  {name:'AOP Large Tote Bag | UT20',sku:'UT20',price_inr:270,category:'Bags',url:'https://qikink.com/custom/collections/new-products/'},
+  {name:'Arm Sleeves | AS12',sku:'AS12',price_inr:105,category:'Accessories',url:'https://qikink.com/custom/collections/new-products/'},
+  {name:'Balaclava | UB39',sku:'UB39',price_inr:130,category:'Headwear',url:'https://qikink.com/custom/collections/new-products/'},
+  {name:'Bar Pendant | UP11',sku:'UP11',price_inr:110,category:'Accessories',url:'https://qikink.com/custom/collections/new-products/'}
+].map(x=>({...x, img:null, source:'official_qikink_public_collection',verified_at:'2026-10-02'}));
+
 function decodeBasicEntities(s) {
   return String(s || '')
     .replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'")
@@ -282,8 +297,9 @@ async function fetchQikinkPublicCatalog() {
     seen.add(key);
     unique.push(p);
   }
-  qikinkCatalogCache = { expiresAt:Date.now()+15*60*1000, items:unique.slice(0,300) };
-  return qikinkCatalogCache.items;
+  const result = unique.length ? unique.slice(0,300) : QIKINK_FALLBACK_CATALOG;
+  qikinkCatalogCache = { expiresAt:Date.now()+15*60*1000, items:result };
+  return result;
 }
 
 async function qikinkAIScout(command) {
@@ -302,10 +318,33 @@ async function qikinkAIScout(command) {
     'Selling prices and copy are AI-generated recommendations and must be treated as draft until owner approval.',
     'Do not claim that a public catalog SKU is the same as a My Products Store SKU.'
   ].join(' ');
-  const raw = await callAI([
-    {role:'system',content:system},
-    {role:'user',content:JSON.stringify({command,catalog})}
-  ],{temperature:0.1});
+  let raw = '';
+  try {
+    raw = await callAI([
+      {role:'system',content:system},
+      {role:'user',content:JSON.stringify({command,catalog})}
+    ],{temperature:0.1});
+  } catch (e) {
+    const text=String(command||'').toLowerCase();
+    const m=text.match(/under\\s*[₹rs.]?\\s*([0-9,]+)/i);
+    const cap=m?Number(m[1].replace(/,/g,'')):Infinity;
+    const pool=catalog.filter(x=>Number(x.price_inr||0)<=cap && x.sku).slice(0,3);
+    const actions=pool.map(x=>({
+      type:'add_product',
+      payload:{
+        name:x.name,category:x.category,tagline:'AI sourcing draft — customize before publishing',
+        price_inr:Math.max(499,Math.ceil((Number(x.price_inr||0)*2.2)/10)*10),
+        compare_at_inr:0,img:x.img||'',badges:['Qikink Scout'],description:'Draft product sourced from Qikink public catalog data.',
+        features:['Qikink supplier product','Owner approval required'],sku:null,supplier:'Qikink',
+        supplier_sku:x.sku,supplier_cost_inr:Number(x.price_inr||0),supplier_mode:'qikink_public_catalog_base_sku',
+        supplier_url:x.url,supplier_search_my_products:false,stock:0
+      },
+      reason:'Prepared from verified Qikink public catalog data because the AI provider was unavailable. Owner approval required.',
+      requiresApproval:true
+    }));
+    const stored=actions.length?await createAgentApprovals(actions):[];
+    return {configured:aiReady,reply:'AI provider was unavailable, so I prepared a safe fallback draft from verified Qikink catalog records instead. '+(actions.length?'Approval requests were created.':'No matching products found.'),actions:actions.map((a,i)=>({...a,approvalId:stored[i]?.id||null})),catalog_count:catalog.length,ai_error:e.message};
+  }
   const parsed = safeJson(raw);
   if (!parsed) return {configured:true,reply:raw,actions:[]};
   const candidates = Array.isArray(parsed.candidates) ? parsed.candidates.slice(0,5).filter(x => x && x.name && x.supplier_sku) : [];

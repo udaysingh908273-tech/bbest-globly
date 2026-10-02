@@ -87,7 +87,7 @@ function orderView(){
   });
 }
 async function supplierView(){
-  $('#suppliers').innerHTML='<div class="section-card"><div class="section-head"><div><h2>🚚 Supplier / Dropshipping</h2><div class="muted">AI researches the supplier catalog, prepares products and sends only approved actions for execution.</div></div><button class="btn soft" id="supplierRefresh">Refresh</button></div><div id="supplierStatus" class="notice">Checking supplier connection…</div></div><div class="section-card"><div class="section-head"><div><h2>🤖 AI Qikink Product Scout</h2><div class="muted">No manual SKU copying for the research workflow. AI uses Qikink public catalog data and creates approval-ready product drafts.</div></div><span class="badge">AI + Approval</span></div><textarea id="qikinkScoutCmd" class="command" placeholder="Example: Find 3 Qikink products for a Diwali gifting collection under ₹900, target at least 30% gross margin before shipping/ads."></textarea><div class="actions" style="margin-top:8px"><button class="btn primary" id="qikinkScout">Run AI Scout</button><button class="btn soft" id="openApprovals">Open Approvals</button></div><div id="qikinkScoutOut" class="ai-output">Ready.</div></div><div class="section-card"><div class="section-head"><h2>Qikink</h2><span class="badge">Open API</span></div><p class="muted">Order forwarding uses the Qikink Open API. Automatic supplier ordering stays off until explicitly enabled, so paid supplier actions remain owner-approved.</p><div id="qikinkOrders"></div></div>';
+  $('#suppliers').innerHTML='<div class="section-card"><div class="section-head"><div><h2>🚚 Supplier / Dropshipping</h2><div class="muted">AI researches the supplier catalog, prepares products and sends only approved actions for execution.</div></div><button class="btn soft" id="supplierRefresh">Refresh</button></div><div id="supplierStatus" class="notice">Checking supplier connection…</div></div><div class="section-card"><div class="section-head"><div><h2>🤖 AI Qikink Product Scout</h2><div class="muted">No manual SKU copying for the research workflow. AI uses Qikink public catalog data and creates approval-ready product drafts.</div></div><span class="badge">AI + Approval</span></div><textarea id="qikinkScoutCmd" class="command" placeholder="Example: Find 3 Qikink products for a Diwali gifting collection under ₹900, target at least 30% gross margin before shipping/ads."></textarea><div class="actions" style="margin-top:8px"><button type="button" class="btn primary" id="qikinkScout">Run AI Scout</button><button type="button" class="btn soft" id="openApprovals">Open Approvals</button></div><div id="qikinkScoutOut" class="ai-output">Ready.</div></div><div class="section-card"><div class="section-head"><h2>Qikink</h2><span class="badge">Open API</span></div><p class="muted">Order forwarding uses the Qikink Open API. Automatic supplier ordering stays off until explicitly enabled, so paid supplier actions remain owner-approved.</p><div id="qikinkOrders"></div></div>';
 
   async function load(){
     try{
@@ -106,17 +106,23 @@ async function supplierView(){
     }catch(e){$('#supplierStatus').textContent='Supplier status error: '+e.message}
   }
 
-  $('#qikinkScout').onclick=async()=>{
+  window.__qikinkScout=async()=>{
     const out=$('#qikinkScoutOut'), cmd=$('#qikinkScoutCmd').value.trim();
-    if(!cmd){out.textContent='Enter the product goal for the AI scout.';return}
-    out.textContent='AI is researching Qikink…';
+    out.textContent='Starting AI Scout…';
+    if(!cmd){out.textContent='Enter the product goal for the AI scout.';$('#qikinkScoutCmd').focus();return}
+    const btn=$('#qikinkScout'); if(btn){btn.disabled=true;btn.textContent='Researching…'}
     try{
       const d=await api('/api/admin/suppliers/qikink/ai-scout',{method:'POST',body:{command:cmd}});
       const names=(d.actions||[]).map(a=>a.payload?.name||'product').join(', ');
       out.textContent=(d.reply||'AI scout finished.')+'\n\n'+(d.actions?.length?('Approval requests created: '+d.actions.length+'. '+names):'No approval-ready products were created.');
-    }catch(e){out.textContent='AI scout error: '+e.message}
+    }catch(e){
+      out.textContent='AI scout error: '+e.message;
+    }finally{
+      if(btn){btn.disabled=false;btn.textContent='Run AI Scout'}
+    }
   };
-  $('#openApprovals').onclick=()=>setView('approvals');
+  $('#qikinkScout').onclick=(e)=>{e.preventDefault();window.__qikinkScout()};
+  $('#openApprovals').onclick=(e)=>{e.preventDefault();setView('approvals')};
   $('#supplierRefresh').onclick=load;
   await load();
 }

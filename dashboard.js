@@ -87,27 +87,39 @@ function orderView(){
   });
 }
 async function supplierView(){
-  $('#suppliers').innerHTML='<div class="section-card"><div class="section-head"><div><h2>🚚 Supplier / Dropshipping</h2><div class="muted">Connect a supplier, map supplier SKUs, then forward approved orders.</div></div><button class="btn soft" id="supplierRefresh">Refresh</button></div><div id="supplierStatus" class="notice">Checking supplier connection…</div></div><div class="section-card"><div class="section-head"><h2>Qikink</h2><span class="badge">Open API</span></div><p class="muted">Qikink's official API can create fulfillment orders using your Qikink auth token and product SKU. This connector does not invent supplier catalogue data.</p><div id="qikinkOrders"></div></div>';
+  $('#suppliers').innerHTML='<div class="section-card"><div class="section-head"><div><h2>🚚 Supplier / Dropshipping</h2><div class="muted">AI researches the supplier catalog, prepares products and sends only approved actions for execution.</div></div><button class="btn soft" id="supplierRefresh">Refresh</button></div><div id="supplierStatus" class="notice">Checking supplier connection…</div></div><div class="section-card"><div class="section-head"><div><h2>🤖 AI Qikink Product Scout</h2><div class="muted">No manual SKU copying for the research workflow. AI uses Qikink public catalog data and creates approval-ready product drafts.</div></div><span class="badge">AI + Approval</span></div><textarea id="qikinkScoutCmd" class="command" placeholder="Example: Find 3 Qikink products for a Diwali gifting collection under ₹900, target at least 30% gross margin before shipping/ads."></textarea><div class="actions" style="margin-top:8px"><button class="btn primary" id="qikinkScout">Run AI Scout</button><button class="btn soft" id="openApprovals">Open Approvals</button></div><div id="qikinkScoutOut" class="ai-output">Ready.</div></div><div class="section-card"><div class="section-head"><h2>Qikink</h2><span class="badge">Open API</span></div><p class="muted">Order forwarding uses the Qikink Open API. Automatic supplier ordering stays off until explicitly enabled, so paid supplier actions remain owner-approved.</p><div id="qikinkOrders"></div></div>';
+
   async function load(){
     try{
       const s=await api('/api/admin/suppliers/qikink/status');
-      $('#supplierStatus').innerHTML=s.configured?'<strong>Qikink connected.</strong><div class="muted">Shipping: '+(s.shipping?'Qikink':'Self')+' · Auto fulfillment: '+(s.autoFulfill?'ON':'OFF')+'</div>':'<strong>Qikink not connected.</strong><div class="muted">Add QIKINK_AUTH_TOKEN in Render. Keep auto fulfillment OFF until a test order succeeds.</div>';
+      $('#supplierStatus').innerHTML=s.configured?'<strong>Qikink connected.</strong><div class="muted">Shipping: '+(s.shipping?'Qikink':'Self')+' · Auto fulfillment: '+(s.autoFulfill?'ON':'OFF')+'</div>':'<strong>Qikink not connected.</strong><div class="muted">Add QIKINK_AUTH_TOKEN in Render.</div>';
       const rows=orders.map(o=>{
         const hasSku=(o.items||[]).every(i=>{const p=products.find(x=>x.id===i.id);return !!(p?.supplier_sku||p?.sku)});
         const ready=o.status!=='CANCELLED' && hasSku && !o.supplier_order_id;
         return '<div class="product-row"><div><strong>'+esc(o.id)+'</strong><div class="muted">'+esc(o.customer?.name||'')+' · '+money(o.totals?.total_inr)+'</div><span class="badge">'+esc(o.supplier_status||'Not sent')+'</span></div><div class="muted">'+(hasSku?'Supplier SKU ready':'Missing supplier SKU')+'</div><div class="actions">'+(ready?'<button class="btn primary qikink-send" data-id="'+esc(o.id)+'">Send to Qikink</button>':'')+'</div></div>';
       }).join('');
       $('#qikinkOrders').innerHTML=rows||'<div class="notice">No orders yet.</div>';
-      $('.qikink-send').forEach(btn=>btn.onclick=async()=>{
+      $$('.qikink-send').forEach(btn=>btn.onclick=async()=>{
         btn.disabled=true;btn.textContent='Sending…';
         try{const r=await api('/api/admin/suppliers/qikink/orders/'+encodeURIComponent(btn.dataset.id),{method:'POST'});toast('Qikink order created'+(r.supplier_order_id?' · #'+r.supplier_order_id:''));await refresh();await load()}catch(e){btn.disabled=false;btn.textContent='Send to Qikink';alert(e.message)}
       });
     }catch(e){$('#supplierStatus').textContent='Supplier status error: '+e.message}
   }
+
+  $('#qikinkScout').onclick=async()=>{
+    const out=$('#qikinkScoutOut'), cmd=$('#qikinkScoutCmd').value.trim();
+    if(!cmd){out.textContent='Enter the product goal for the AI scout.';return}
+    out.textContent='AI is researching Qikink…';
+    try{
+      const d=await api('/api/admin/suppliers/qikink/ai-scout',{method:'POST',body:{command:cmd}});
+      const names=(d.actions||[]).map(a=>a.payload?.name||'product').join(', ');
+      out.textContent=(d.reply||'AI scout finished.')+'\n\n'+(d.actions?.length?('Approval requests created: '+d.actions.length+'. '+names):'No approval-ready products were created.');
+    }catch(e){out.textContent='AI scout error: '+e.message}
+  };
+  $('#openApprovals').onclick=()=>setView('approvals');
   $('#supplierRefresh').onclick=load;
   await load();
 }
-
 function researchView(){$('#research').innerHTML='<div class="ai-box"><h2>🔎 AI Product Researcher</h2><p>Run research through the configured AI/live data providers. The system will never fabricate trend data.</p><textarea id="researchCmd" class="command" placeholder="Example: Research 5 home products for Diwali under ₹1500."></textarea><button id="runResearch" class="btn primary">Research</button><div id="researchOut" class="ai-output">No research run yet.</div></div>';$('#runResearch').onclick=async()=>{const o=$('#researchOut');o.textContent='Researching…';try{const d=await api('/api/ai/chat',{method:'POST',body:{message:$('#researchCmd').value,task:'product_research',context:{products}}});o.textContent=d.reply||'No result'}catch(e){o.textContent='AI/research provider not configured: '+e.message}}}
 function marketingView(){const seasons=['Diwali','Holi','Eid','Christmas','New Year','Summer','Monsoon','Winter'];$('#marketing').innerHTML='<div class="section-card"><div class="section-head"><div><h2>AI Marketing Manager</h2><div class="muted">Prepare campaigns using season, festivals, trends and actual products.</div></div></div><div class="toolbar"><select id="season">'+seasons.map(x=>'<option>'+x+'</option>').join('')+'</select><button class="btn primary" id="mk">Prepare campaign</button></div><div id="mkout" class="ai-output">Select an occasion and generate a draft.</div></div>';$('#mk').onclick=async()=>{const o=$('#mkout');o.textContent='Preparing…';try{const d=await api('/api/ai/chat',{method:'POST',body:{message:'Prepare a marketing campaign draft for '+$('#season').value+' using actual BBest Globly products and clearly label assumptions.',task:'marketing',context:{products,orders}}});o.textContent=d.reply||'No result'}catch(e){o.textContent='AI not configured: '+e.message}}}
 function seoView(){const opts=products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('');$('#seo').innerHTML='<div class="ai-box"><h2>🧠 AI SEO Manager</h2><p>Generate SEO drafts from real product data.</p><select id="seoP" class="command" style="color:#111">'+opts+'</select><button id="seoBtn" class="btn primary">Generate SEO</button><div id="seoOut" class="ai-output">Ready.</div></div>';$('#seoBtn').onclick=async()=>{const p=products.find(x=>x.id===$('#seoP').value),o=$('#seoOut');o.textContent='Generating…';try{const d=await api('/api/ai/chat',{method:'POST',body:{message:'Create SEO title, meta description, slug, keywords and FAQ for this product. Product: '+JSON.stringify(p),task:'seo',context:{product:p}}});o.textContent=d.reply||'No result'}catch(e){o.textContent='AI not configured: '+e.message}}}

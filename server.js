@@ -13,6 +13,14 @@ const GMAIL_SMTP_USER = process.env.GMAIL_SMTP_USER || '';
 const GMAIL_SMTP_APP_PASSWORD = process.env.GMAIL_SMTP_APP_PASSWORD || '';
 const ADMIN_RECOVERY_EMAIL = (process.env.ADMIN_RECOVERY_EMAIL || GMAIL_SMTP_USER).trim().toLowerCase();
 const gmailOtpReady = !!(nodemailer && GMAIL_SMTP_USER && GMAIL_SMTP_APP_PASSWORD && ADMIN_RECOVERY_EMAIL);
+const otpThrottle = new Map();
+function otpAllowed(key){
+  const now=Date.now(), x=otpThrottle.get(key)||{count:0,windowStart:now,last:0};
+  if(now-x.windowStart>60*60*1000){x.count=0;x.windowStart=now;}
+  if(x.count>=5)return false;
+  if(now-x.last<60*1000)return false;
+  x.count++;x.last=now;otpThrottle.set(key,x);return true;
+}
 
 const ROOT = __dirname;
 const PORT = process.env.PORT || 3000;
@@ -246,6 +254,40 @@ async function sendAdminOtp(email){
     headers:{'Prefer':'return=minimal'},
     body:JSON.stringify([{id,email,otp_hash:hash,otp_salt:salt,attempts:0,used:false,expires_at:new Date(Date.now()+10*60*1000).toISOString()}])
   });
+}
+async function sendCustomerOtp(email){
+  if(!gmailOtpReady) throw new Error('Email OTP is not configured');
+  if(!supabaseReady) throw new Error('Supabase persistence is required for password recovery');
+  const safeEmail=String(email||'').trim().toLowerCase();
+  const otp=String(crypto.randomInt(100000,1000000));
+  const salt=newSalt(), hash=hashPw(otp,salt), id='OTP-'+crypto.randomBytes(8).toString('hex');
+  const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
+  await transporter.sendMail({
+    from:GMAIL_SMTP_USER,to:safeEmail,subject:'BBest Globly — Password Reset OTP',
+    text:'Your BBest Globly password reset OTP is '+otp+'. It expires in 10 minutes.',
+    html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>Your password reset OTP is:</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This OTP expires in 10 minutes.</p></div>'
+  });
+  await supabaseRequest('customer_password_otps',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([{id,email:safeEmail,otp_hash:hash,otp_salt:salt,attempts:0,used:false,expires_at:new Date(Date.now()+10*60*1000).toISOString()}])});
+}
+async function verifyCustomerOtp(email,otp,newPassword){
+  if(!gmailOtpReady) throw new Error('Email OTP is not configured');
+  if(!supabaseReady) throw new Error('Supabase persistence is required for password recovery');
+  if(newPassword.length<8) throw new Error('New password must be at least 8 characters');
+  const safeEmail=String(email||'').trim().toLowerCase();
+  const rows=await supabaseRequest('customer_password_otps?select=*&email=eq.'+encodeURIComponent(safeEmail)+'&used=eq.false&order=created_at.desc&limit=1');
+  const row=Array.isArray(rows)?rows[0]:null;
+  if(!row)throw new Error('OTP not found. Request a new OTP.');
+  if(new Date(row.expires_at).getTime()<Date.now())throw new Error('OTP expired. Request a new OTP.');
+  if(Number(row.attempts||0)>=5)throw new Error('Too many incorrect attempts. Request a new OTP.');
+  const expected=hashPw(String(otp||''),row.otp_salt),a=Buffer.from(expected),b=Buffer.from(row.otp_hash);
+  if(a.length!==b.length||!crypto.timingSafeEqual(a,b)){
+    await supabaseRequest('customer_password_otps?id=eq.'+encodeURIComponent(row.id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify({attempts:Number(row.attempts||0)+1})});
+    throw new Error('Incorrect OTP');
+  }
+  const customers=readJSON('customers.json',[]), customer=customers.find(x=>x.email===safeEmail);
+  if(!customer)throw new Error('No account found for this email');
+  const salt=newSalt(); customer.salt=salt; customer.pass=hashPw(newPassword,salt); writeJSON('customers.json',customers);
+  await supabaseRequest('customer_password_otps?id=eq.'+encodeURIComponent(row.id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify({used:true})});
 }
 async function verifyAdminOtp(email,otp,newPassword){
   if(!gmailOtpReady) throw new Error('Gmail OTP is not configured');
@@ -1000,6 +1042,39 @@ const server = http.createServer(async (req, res) => {
       }catch(e){return json(res,400,{error:e.message})}
     }
 
+    if (p === '/api/admin/forgot-password/request' && req.method === 'POST') {
+      const b=await readBody(req), email=String(b.email||'').trim().toLowerCase();
+      if(!/^\S+@\S+\.\S+$/.test(email)) return json(res,400,{error:'Enter a valid recovery email'});
+      if(!otpAllowed('admin:'+email)) return json(res,429,{error:'Please wait before requesting another OTP'});
+      try{
+        if(gmailOtpReady && email===ADMIN_RECOVERY_EMAIL) await sendAdminOtp(email);
+        return json(res,200,{ok:true,message:'If this is the configured recovery email, an OTP has been sent.'});
+      }catch(e){return json(res,503,{error:e.message})}
+    }
+
+    if (p === '/api/admin/forgot-password/verify' && req.method === 'POST') {
+      const b=await readBody(req);
+      try{await verifyAdminOtp(String(b.email||'').trim().toLowerCase(),String(b.otp||'').trim(),String(b.new_password||''));return json(res,200,{ok:true,message:'Password reset successfully. You can now log in.'})}
+      catch(e){return json(res,400,{error:e.message})}
+    }
+
+    if (p === '/api/auth/forgot-password/request' && req.method === 'POST') {
+      const b=await readBody(req), email=String(b.email||'').trim().toLowerCase();
+      if(!/^\S+@\S+\.\S+$/.test(email)) return json(res,400,{error:'Enter a valid email'});
+      if(!otpAllowed('customer:'+email)) return json(res,429,{error:'Please wait before requesting another OTP'});
+      try{
+        const exists=readJSON('customers.json',[]).some(x=>x.email===email);
+        if(exists && gmailOtpReady) await sendCustomerOtp(email);
+        return json(res,200,{ok:true,message:'If an account exists for this email, an OTP has been sent.'});
+      }catch(e){return json(res,503,{error:e.message})}
+    }
+
+    if (p === '/api/auth/forgot-password/verify' && req.method === 'POST') {
+      const b=await readBody(req);
+      try{await verifyCustomerOtp(String(b.email||'').trim().toLowerCase(),String(b.otp||'').trim(),String(b.new_password||''));return json(res,200,{ok:true,message:'Password reset successfully. Please log in.'})}
+      catch(e){return json(res,400,{error:e.message})}
+    }
+
     if (p === '/api/admin/forgot-password' && req.method === 'POST') {
       const b=await readBody(req);
       const recoveryKey=String(b.recovery_key||'');
@@ -1095,6 +1170,10 @@ const server = http.createServer(async (req, res) => {
         writeJSON('products.json', next);
         return json(res, 200, {ok:true, deleted:id});
       }
+      if (p === '/api/admin/email-otp/status' && req.method === 'GET') {
+        return json(res,200,{configured:gmailOtpReady});
+      }
+
       if (p === '/api/admin/ai/status' && req.method === 'GET') {
         return json(res, 200, {configured:aiReady, model:aiReady ? AI_MODEL : null, liveResearchConfigured:!!(process.env.RESEARCH_API_URL && process.env.RESEARCH_API_KEY)});
       }

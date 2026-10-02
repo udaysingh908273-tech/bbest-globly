@@ -178,7 +178,7 @@ function shopPage(){
   meta((parentDef?parentDef.name+' — ':'')+'Shop — BBest Globly','Browse BBest Globly products by department and category.');
   const back=activeParent?backControl():'';
   $('#app').innerHTML='<section class="page"><div class="shop-topline">'+back+'<div><span class="eyebrow">BBEST GLOBLY</span><h1>'+(parentDef?esc(parentDef.name):'Shop')+'</h1><p class="muted">'+(parentDef?esc(parentDef.desc):'Browse every department in one place.')+'</p></div></div><div class="department-rail"><button class="all-department '+(!activeParent?'on':'')+'" onclick="goAllProducts()"><span>✦</span>All</button>'+STORE_CATEGORIES.map(c=>'<button class="'+(c.id===activeParent?'on':'')+'" onclick="goCategory(\\''+c.id+'\\')"><span>'+c.icon+'</span>'+esc(c.name)+'</button>').join('')+'</div><div class="toolbar"><input id="q" type="search" placeholder="Search products…" value="'+esc(shop.q)+'"><select id="sort"><option value="featured">Featured</option><option value="price-asc">Price: Low → High</option><option value="price-desc">Price: High → Low</option></select></div><div class="chips" id="cats">'+cats.map(c=>'<button class="chip '+((!activeParent&&shop.cat==='All'&&c==='All')||(activeParent&&(c==='All'?shop.cat===activeParent:shop.cat===c))?'on':'')+'" data-cat="'+esc(c)+'">'+esc(c==='All'?'All':c)+'</button>').join('')+'</div><div class="grid" id="grid"></div></section>';
-  $('#q').oninput=e=>{shop.q=e.target.value;drawShop()};
+  $('#q').oninput=e=>{shop.q=e.target.value;drawShop();if(shop.q.trim()){document.querySelectorAll('#cats .chip').forEach(x=>x.classList.remove('on'))}};
   $('#sort').value=shop.sort;
   $('#sort').onchange=e=>{shop.sort=e.target.value;drawShop()};
   $$('#cats .chip').forEach(b=>b.onclick=()=>{
@@ -208,5 +208,7 @@ function drawShop(){
 }
 
 (async()=>{try{const [productsCfg,siteCfg]=await Promise.all([api('/api/products').catch(()=>api('/data/products.json')),api('/api/site/config').catch(()=>state.siteConfig)]);state.products=Array.isArray(productsCfg)?productsCfg:[];state.siteConfig=siteCfg||state.siteConfig;applySiteConfig();if(state.token){try{state.user=await api('/api/auth/me',{auth:'user'})}catch{state.token='';localStorage.removeItem('bg_token')}}}catch{state.products=[]}const inr=$('#curINR'),usd=$('#curUSD');if(inr)inr.onclick=()=>{state.currency='INR';localStorage.setItem('bg_cur','INR');render()};if(usd)usd.onclick=()=>{state.currency='USD';localStorage.setItem('bg_cur','USD');render()};render()})();
+
+
 
 

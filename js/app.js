@@ -87,7 +87,7 @@ function login(){authForm(false)}
 function register(){authForm(true)}
 function authForm(reg){meta(reg?'Create Account — BBest Globly':'Login — BBest Globly');$('#app').innerHTML='<section class="page"><div class="auth-card"><h1>'+(reg?'Create your account':'Welcome back')+'</h1><p class="sub">'+(reg?'Track orders and checkout faster.':'Log in to your BBest Globly account.')+'</p>'+(reg?'<div class="field"><label>Name</label><input id="nm"></div>':'')+(reg?'<div class="field"><label>Phone</label><input id="ph"></div>':'')+'<div class="field"><label>Email</label><input id="em" type="email"></div><div class="field"><label>Password</label><input id="pw" type="password"></div><p id="aerr" class="form-err"></p><button id="ab" class="btn btn-primary btn-block">'+(reg?'Create account':'Login')+'</button><p class="auth-link">'+(reg?'Already have an account? <a href="/login">Login</a>':'New here? <a href="/register">Create an account</a>')+'</p></div></section>';if(!reg){const fb=document.createElement('button');fb.id='forgotCustomer';fb.type='button';fb.className='btn btn-outline btn-block';fb.style.marginTop='10px';fb.textContent='Forgot password? Email OTP';$('#ab').insertAdjacentElement('afterend',fb)}
 $('#ab').onclick=async()=>{try{const body=reg?{name:$('#nm').value,phone:$('#ph').value,email:$('#em').value,password:$('#pw').value}:{email:$('#em').value,password:$('#pw').value};const d=await api(reg?'/api/auth/register':'/api/auth/login',{method:'POST',body});state.token=d.token;state.user=d.customer;localStorage.setItem('bg_token',state.token);nav('/account')}catch(e){$('#aerr').textContent=e.message}}}
-async async function account(){
+async function account(){
   if(!state.token)return nav('/login');
   try{
     const me=await api('/api/auth/me',{auth:'user'}),os=await api('/api/my/orders',{auth:'user'});
@@ -122,4 +122,83 @@ document.addEventListener('click',async e=>{if(e.target.id==='forgotCustomer'){c
 if(e.target.id==='rSend'){const email=$('#rEmail')?.value.trim()||'',msg=$('#rMsg'),b=e.target;if(!email){msg.textContent='Enter your account email.';return}b.disabled=true;b.textContent='Sending…';try{const d=await api('/api/auth/forgot-password/request',{method:'POST',body:{email}});msg.style.color='var(--ok)';msg.textContent=d.message||'Check your email for the OTP.';$('#rOtp').focus()}catch(err){msg.style.color='var(--danger)';msg.textContent=err.message}finally{b.disabled=false;b.textContent='Send OTP'}return}
 if(e.target.id==='rVerify'){const email=$('#rEmail')?.value.trim()||'',otp=$('#rOtp')?.value.trim()||'',pw=$('#rPw')?.value||'',msg=$('#rMsg'),b=e.target;if(!email||!otp||!pw){msg.textContent='Fill email, OTP and new password.';return}b.disabled=true;b.textContent='Resetting…';try{const d=await api('/api/auth/forgot-password/verify',{method:'POST',body:{email,otp,new_password:pw}});msg.style.color='var(--ok)';msg.textContent=d.message||'Password reset. Please login.';$('#em').value=email;$('#pw').focus()}catch(err){msg.style.color='var(--danger)';msg.textContent=err.message}finally{b.disabled=false;b.textContent='Reset password'}}});
 document.addEventListener('click',e=>{const a=e.target.closest('a');if(!a)return;const h=a.getAttribute('href')||'';if(h.startsWith('/')&&!h.startsWith('//')){e.preventDefault();nav(h)}});window.addEventListener('popstate',render);
+
+/* ===== Storefront IA: Home + department/subcategory navigation ===== */
+const STORE_CATEGORIES=[
+  {id:'beauty',name:'Beauty',icon:'✦',desc:'Skincare, haircare & beauty essentials',subs:['Skincare','Haircare','Makeup','Personal Care']},
+  {id:'fashion',name:'Clothing',icon:'◌',desc:'Everyday fashion for everyone',subs:['Girls Clothing','Boys Clothing','Women Clothing','Men Clothing']},
+  {id:'kids',name:'Kids',icon:'◇',desc:'Fun, useful picks for little ones',subs:['Kids Fashion','Toys & Games','Baby Care','School & Activity']},
+  {id:'home',name:'Home & Living',icon:'⌂',desc:'Make every room feel better',subs:['Home Decor','Kitchen','Storage & Organization','Lighting']},
+  {id:'tech',name:'Tech & Gadgets',icon:'⌁',desc:'Smart upgrades for everyday life',subs:['Mobile Accessories','Gadgets','Wearables','Desk Setup']},
+  {id:'wellness',name:'Health & Wellness',icon:'♡',desc:'Everyday wellness and self-care',subs:['Fitness','Wellness','Personal Care']},
+  {id:'pets',name:'Pet Care',icon:'◇',desc:'Useful picks for happy pets',subs:['Dog Care','Cat Care','Grooming','Pet Accessories']}
+];
+const CATEGORY_ALIASES={
+  beauty:['Beauty','Skincare','Haircare','Makeup','Personal Care'],
+  fashion:['Clothing','Girls Clothing','Boys Clothing','Women Clothing','Men Clothing'],
+  kids:['Kids','Kids Fashion','Toys & Games','Baby Care','School & Activity'],
+  home:['Home & Decor','Kitchen & Wellness','Home','Kitchen','Storage & Organization','Lighting'],
+  tech:['Mobile & Tech','Tech & Gadgets','Mobile Accessories','Gadgets','Wearables'],
+  wellness:['Health & Wellness','Fitness & Wearables','Wellness','Fitness'],
+  pets:['Pet Care','Dog Care','Cat Care','Grooming']
+};
+const categoryProducts=(id)=>state.products.filter(p=>(CATEGORY_ALIASES[id]||[]).some(x=>String(p.category||'').toLowerCase()===x.toLowerCase()));
+function hasCategory(id){return categoryProducts(id).length>0}
+function goCategory(id,sub=''){
+  shop.cat=sub||id;
+  shop.parent=sub?'':id;
+  nav('/shop?category='+encodeURIComponent(id)+(sub?'&sub='+encodeURIComponent(sub):''));
+}
+function parseShopParams(){
+  const u=new URL(location.href),id=u.searchParams.get('category'),sub=u.searchParams.get('sub');
+  if(id&&STORE_CATEGORIES.some(c=>c.id===id)){shop.parent=id;shop.cat=sub||id}else if(!id){shop.parent='';if(!STORE_CATEGORIES.some(c=>c.id===shop.cat))shop.cat='All'}
+}
+function storefrontBack(){
+  if(history.length>1) history.back(); else nav('/');
+}
+function backControl(){
+  return '<button type="button" class="store-back" onclick="storefrontBack()" aria-label="Go back">← <span>Back</span></button>';
+}
+function categoryTile(c,i){
+  const count=categoryProducts(c.id).length;
+  return '<button class="category-tile category-tile-lg" onclick="goCategory(\''+c.id+'\')" aria-label="Shop '+esc(c.name)+'"><span class="category-icon">'+c.icon+'</span><span class="category-num">0'+(i+1)+'</span><strong>'+esc(c.name)+'</strong><span>'+esc(c.desc)+'</span><small>'+count+' '+(count===1?'product':'products')+' · Explore →</small></button>';
+}
+function home(){
+  const cfg=state.siteConfig||{},hero=cfg.hero||{},featured=state.products[0];
+  meta((cfg.brand||'BBest Globly')+' — Modern Shopping for Everyday Life','Shop beauty, fashion, kids, home, tech, wellness and pet products at BBest Globly.');
+  const featuredHtml=featured?'<a class="hero-product-card" href="/product/'+featured.id+'"><div class="hero-product-image"><img src="'+featured.img+'" alt="'+esc(featured.name)+'" loading="eager"></div><div class="hero-product-info"><span>Featured pick</span><strong>'+esc(featured.name)+'</strong><b>'+money(featured.price_inr)+'</b></div><span class="hero-product-arrow">↗</span></a>':'';
+  $('#app').innerHTML='<section class="hero"><div class="hero-bg" style="background-image:url(\'img/hero.jpg\')"></div><div class="hero-noise"></div><div class="hero-orb orb-a"></div><div class="hero-orb orb-b"></div><div class="hero-in wrap"><div class="hero-copy reveal-up"><span class="hero-kicker"><i></i>'+esc(hero.kicker||'✦ New arrivals')+'</span><h1>Find your next <em>favourite.</em></h1><p>Beauty, fashion, kids, home, tech and everyday essentials — organised so you can find what you need faster.</p><div class="hero-cta"><a class="btn btn-primary btn-lg" href="/shop">Shop everything <span>↗</span></a><a class="hero-text-link" href="#departments" onclick="event.preventDefault();document.getElementById(\'departments\')?.scrollIntoView({behavior:\'smooth\'})">Browse categories <span>↓</span></a></div><div class="hero-micro-proof"><span><b>'+state.products.length+'+</b> live picks</span><span class="proof-dot"></span><span>Simple checkout</span><span class="proof-dot"></span><span>Order tracking</span></div></div>'+featuredHtml+'</div><div class="hero-bottom-fade"></div></section><section class="wrap"><div class="value-row reveal-stagger"><div class="value"><span class="v-ico">✦</span><div><strong>Curated categories</strong><span>Find products without endless scrolling</span></div></div><div class="value"><span class="v-ico">↗</span><div><strong>Easy discovery</strong><span>Shop by department or search directly</span></div></div><div class="value"><span class="v-ico">⌁</span><div><strong>Track every order</strong><span>Know what is happening next</span></div></div></div><section id="departments" class="category-panel reveal-up"><div class="category-panel-head"><div><span class="eyebrow">SHOP BY DEPARTMENT</span><h2>What are you shopping for?</h2><p class="muted">Choose a department, then narrow down to exactly what you want.</p></div><a href="/shop">View all <span>→</span></a></div><div class="category-grid category-grid-main">'+STORE_CATEGORIES.map(categoryTile).join('')+'</div></section><section class="subcat-showcase reveal-up"><div class="section-heading"><div><span class="eyebrow">MADE FOR EVERYONE</span><h2>Popular sections</h2></div></div><div class="subcat-pills">'+STORE_CATEGORIES.flatMap(c=>c.subs.slice(0,2).map(s=>'<button onclick="goCategory(\''+c.id+'\',\''+esc(s).replace(/'/g,"&#39;")+'\')">'+esc(s)+' <span>→</span></button>')).join('')+'</div></section><section class="featured-section"><div class="section-heading reveal-up"><div><span class="eyebrow">CURATED FOR NOW</span><h2>Trending now</h2><p>Live products from the current catalogue. More departments will appear as inventory is added.</p></div><a class="section-link" href="/shop">See the full shop →</a></div><div class="grid">'+state.products.map(card).join('')+'</div></section><section class="editorial-panel reveal-up"><div><span class="eyebrow">THE BBEST APPROACH</span><h2>One store. Clear departments. Less scrolling.</h2><p>Use Home to discover, Departments to browse, Search to find, and your account to track everything after checkout.</p><a class="btn btn-outline" href="/shop">Browse all products <span>→</span></a></div><div class="editorial-stats"><div><strong>01</strong><span>Discover</span></div><div><strong>02</strong><span>Choose</span></div><div><strong>03</strong><span>Track</span></div></div></section></section>';
+}
+function shopPage(){
+  parseShopParams();
+  const activeParent=shop.parent;
+  const parentDef=STORE_CATEGORIES.find(c=>c.id===activeParent);
+  const cats=activeParent?['All',...(parentDef?.subs||[])]:['All',...STORE_CATEGORIES.map(c=>c.id)];
+  meta((parentDef?parentDef.name+' — ':'')+'Shop — BBest Globly','Browse BBest Globly products by department and category.');
+  const back=activeParent?backControl():'';
+  $('#app').innerHTML='<section class="page"><div class="shop-topline">'+back+'<div><span class="eyebrow">BBEST GLOBLY</span><h1>'+(parentDef?esc(parentDef.name):'Shop')+'</h1><p class="muted">'+(parentDef?esc(parentDef.desc):'Browse every department in one place.')+'</p></div></div><div class="department-rail">'+STORE_CATEGORIES.map(c=>'<button class="'+(c.id===activeParent?'on':'')+'" onclick="goCategory(\''+c.id+'\')"><span>'+c.icon+'</span>'+esc(c.name)+'</button>').join('')+'</div><div class="toolbar"><input id="q" type="search" placeholder="Search products…" value="'+esc(shop.q)+'"><select id="sort"><option value="featured">Featured</option><option value="price-asc">Price: Low → High</option><option value="price-desc">Price: High → Low</option></select></div><div class="chips" id="cats">'+cats.map(c=>'<button class="chip '+((!activeParent&&shop.cat==='All'&&c==='All')||(activeParent&&(c==='All'?shop.cat===activeParent:shop.cat===c))?'on':'')+'" data-cat="'+esc(c)+'">'+esc(c==='All'?'All':c)+'</button>').join('')+'</div><div class="grid" id="grid"></div></section>';
+  $('#q').oninput=e=>{shop.q=e.target.value;drawShop()};
+  $('#sort').value=shop.sort;
+  $('#sort').onchange=e=>{shop.sort=e.target.value;drawShop()};
+  $$('#cats .chip').forEach(b=>b.onclick=()=>{
+    const v=b.dataset.cat;
+    shop.cat=v==='All'?(activeParent||'All'):v;
+    $$('#cats .chip').forEach(x=>x.classList.toggle('on',x===b));
+    drawShop();
+  });
+  drawShop();
+}
+function drawShop(){
+  const activeParent=shop.parent;
+  const aliases=activeParent?(CATEGORY_ALIASES[activeParent]||[]):null;
+  let a=state.products.filter(p=>{
+    const inParent=!aliases||aliases.some(x=>String(p.category||'').toLowerCase()===x.toLowerCase());
+    const inSub=!activeParent||shop.cat===activeParent||shop.cat==='All'||String(p.category||'').toLowerCase()===String(shop.cat).toLowerCase();
+    return inParent&&inSub&&(p.name+' '+p.category+' '+p.tagline).toLowerCase().includes(shop.q.toLowerCase());
+  });
+  if(shop.sort==='price-asc')a=a.slice().sort((x,y)=>x.price_inr-y.price_inr);
+  if(shop.sort==='price-desc')a=a.slice().sort((x,y)=>y.price_inr-x.price_inr);
+  $('#grid').innerHTML=a.length?a.map(card).join(''):'<div class="category-empty"><div class="category-empty-icon">✦</div><h3>This section is ready for new products</h3><p>We have created this category for the store. Products will appear here as inventory is added.</p><a class="btn btn-outline" href="/shop">Browse all products</a></div>';
+}
+
 (async()=>{try{const [productsCfg,siteCfg]=await Promise.all([api('/api/products').catch(()=>api('/data/products.json')),api('/api/site/config').catch(()=>state.siteConfig)]);state.products=Array.isArray(productsCfg)?productsCfg:[];state.siteConfig=siteCfg||state.siteConfig;applySiteConfig();if(state.token){try{state.user=await api('/api/auth/me',{auth:'user'})}catch{state.token='';localStorage.removeItem('bg_token')}}}catch{state.products=[]}const inr=$('#curINR'),usd=$('#curUSD');if(inr)inr.onclick=()=>{state.currency='INR';localStorage.setItem('bg_cur','INR');render()};if(usd)usd.onclick=()=>{state.currency='USD';localStorage.setItem('bg_cur','USD');render()};render()})();

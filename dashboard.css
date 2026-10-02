@@ -28,3 +28,7 @@
 .reset-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
 .reset-grid input{width:100%}
 @media(max-width:650px){.reset-grid{grid-template-columns:1fr}}
+
+.readiness-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+@media(max-width:850px){.readiness-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:650px){.readiness-grid{grid-template-columns:1fr}}

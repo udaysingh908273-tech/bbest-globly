@@ -1101,12 +1101,21 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/api/admin/login' && req.method === 'POST') {
       const b = await readBody(req);
-      const admin = readJSON('admin.json', null);
-      if (!admin) return json(res, 500, { error: 'admin not configured' });
-      const userOk = String(b.username || '') === admin.username;
-      const verified = await verifyAdminPassword(String(b.password || ''));
-      const passOk = verified === true ? true : (verified === null && hashPw(String(b.password || ''), admin.salt) === admin.pass);
-      if (!userOk || !passOk) return json(res, 401, { error: 'invalid credentials' });
+      const username = String(b.username || '').trim();
+      const password = String(b.password || '');
+      if (username !== 'admin') return json(res, 401, { error: 'invalid credentials' });
+      const verified = await verifyAdminPassword(password);
+      let passOk = verified === true;
+      if (verified === null) {
+        const admin = readJSON('admin.json', null);
+        passOk = !!admin && hashPw(password, admin.salt) === admin.pass;
+      }
+      if (!passOk) {
+        if (!process.env.ADMIN_PASSWORD && !await getAdminCredentialRow()) {
+          return json(res, 503, { error: 'Admin login is not configured. Set ADMIN_PASSWORD in Render Environment or use password recovery.' });
+        }
+        return json(res, 401, { error: 'invalid credentials' });
+      }
       console.log('[admin] login ok');
       return json(res, 200, { ok: true, token: startSession('admin') });
     }

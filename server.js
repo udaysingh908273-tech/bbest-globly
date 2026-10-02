@@ -489,7 +489,26 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, xml, 'application/xml; charset=utf-8');
     }
 
-    if (p === '/api/products' && req.method === 'GET') return json(res, 200, loadCatalog().filter(x => x.published !== false));
+    if (p === '/api/products' && req.method === 'GET') {
+      res.setHeader('Cache-Control','no-store, no-cache, must-revalidate, max-age=0');
+      let catalog=loadCatalog().filter(x=>x.published!==false);
+      if(!catalog.length && supabaseReady){
+        try{
+          const remote=await supabaseRequest('products?select=*&published=eq.true&order=created_at.asc');
+          if(Array.isArray(remote)&&remote.length){
+            catalog=remote.map(x=>({
+              id:x.id,name:x.name,category:x.category,tagline:x.tagline,price_inr:Number(x.price_inr||0),
+              compare_at_inr:Number(x.compare_at_inr||0),img:x.img,badges:x.badges||[],demo:!!x.demo,
+              description:x.description,features:x.features||[],sku:x.sku,stock:Number(x.stock??0),
+              weight_kg:Number(x.weight_kg??0.5),length_cm:Number(x.length_cm??10),breadth_cm:Number(x.breadth_cm??10),
+              height_cm:Number(x.height_cm??10),published:x.published!==false
+            }));
+            writeJSON('products.json',catalog);
+          }
+        }catch(e){console.error('[products fallback]',e.message)}
+      }
+      return json(res,200,catalog);
+    }
 
     /* ---------------- customer auth ---------------- */
     if (p === '/api/auth/register' && req.method === 'POST') {
@@ -931,5 +950,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 hydrateSupabase().finally(() => {
-  server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v2.5 listening on http://0.0.0.0:' + PORT));
+  server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v2.6 listening on http://0.0.0.0:' + PORT));
 });

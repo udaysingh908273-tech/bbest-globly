@@ -1465,6 +1465,7 @@ const server = http.createServer(async (req, res) => {
           if(approval.status!=='PENDING') return json(res,409,{error:'approval is already '+approval.status});
           const type=String(approval.action_type||'');
           const payload=approval.payload||{};
+          await assertAgentActionAllowed(type);
           let result;
 
           if(type==='add_product'){
@@ -1505,6 +1506,7 @@ const server = http.createServer(async (req, res) => {
           }
 
           await updateAgentApproval(approvalId,{status:'EXECUTED',executed_at:new Date().toISOString()});
+          await auditAdmin('admin','EXECUTE_AGENT_ACTION',type,payload.id||approvalId,{approval_id:approvalId});
           await logAgent('owner', 'Executed approval '+approvalId, result);
           return json(res,200,{...result,approvalId});
         } catch(e) {
@@ -1551,6 +1553,20 @@ const server = http.createServer(async (req, res) => {
           customers: readJSON('customers.json', []).length
         });
       }
+      if (p === '/api/admin/customers' && req.method === 'GET') {
+        const customers=readJSON('customers.json',[]);
+        const orders=loadOrders();
+        const rows=customers.map(c=>{
+          const mine=orders.filter(o=>o.customer_id===c.id || (o.customer?.email && String(o.customer.email).toLowerCase()===String(c.email).toLowerCase()));
+          return {
+            id:c.id,name:c.name,email:c.email,phone:c.phone||'',created:c.created,
+            order_count:mine.length,spent_inr:mine.filter(o=>o.status!=='CANCELLED').reduce((s,o)=>s+Number(o.totals?.total_inr||0),0),
+            last_order_at:mine.length?mine.map(o=>o.created).sort().slice(-1)[0]:null
+          };
+        }).sort((a,b)=>Number(b.spent_inr)-Number(a.spent_inr));
+        return json(res,200,rows);
+      }
+
       if (p === '/api/admin/order-status' && req.method === 'POST') {
         const b = await readBody(req);
         if (!b.id) return json(res, 400, { error: 'missing order id' });

@@ -1524,6 +1524,113 @@ const server = http.createServer(async (req, res) => {
         return json(res,200,{ok:true,id,...patch});
       }
 
+
+      if (p === '/api/admin/suppliers' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,[]);
+        const rows=await supabaseRequest('suppliers?select=*&order=priority.asc,name.asc');return json(res,200,Array.isArray(rows)?rows:[]);
+      }
+      if (p === '/api/admin/suppliers' && req.method === 'POST') {
+        if(!roleAllows(adminRole,['owner','manager']))return json(res,403,{error:'Manager role required'});
+        const b=await readBody(req),id=String(b.id||('SUP-'+crypto.randomBytes(6).toString('hex'))).slice(0,60);
+        const row={id,name:String(b.name||'').slice(0,120),type:String(b.type||'MANUAL').slice(0,40),api_base:String(b.api_base||'').slice(0,500)||null,enabled:b.enabled!==false,priority:Math.max(0,Number(b.priority||100)),default_shipping_days:Math.max(1,Number(b.default_shipping_days||7)),return_rate_pct:Math.max(0,Number(b.return_rate_pct||0)),failure_rate_pct:Math.max(0,Number(b.failure_rate_pct||0)),rating:Math.max(0,Math.min(5,Number(b.rating||0))),updated_at:new Date().toISOString()};
+        if(!row.name)return json(res,400,{error:'supplier name is required'});
+        await supabaseRequest('suppliers?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])});
+        await auditAdmin(adminRole,'UPSERT_SUPPLIER','supplier',id,row);return json(res,201,{ok:true,supplier:row});
+      }
+      if (p === '/api/admin/suppliers/products' && req.method === 'POST') {
+        if(!roleAllows(adminRole,['owner','manager']))return json(res,403,{error:'Manager role required'});
+        const b=await readBody(req),id=String(b.id||('SP-'+crypto.randomBytes(6).toString('hex')));
+        const row={id,supplier_id:String(b.supplier_id||''),product_id:String(b.product_id||'')||null,supplier_sku:String(b.supplier_sku||''),title:String(b.title||'').slice(0,180),cost_inr:Math.max(0,Number(b.cost_inr||0)),stock:Math.max(0,Math.floor(Number(b.stock||0))),shipping_days:Math.max(1,Math.floor(Number(b.shipping_days||7))),return_rate_pct:Math.max(0,Number(b.return_rate_pct||0)),failure_rate_pct:Math.max(0,Number(b.failure_rate_pct||0)),last_checked_at:new Date().toISOString(),metadata:b.metadata&&typeof b.metadata==='object'?b.metadata:{}};
+        if(!row.supplier_id||!row.supplier_sku)return json(res,400,{error:'supplier_id and supplier_sku are required'});
+        await supabaseRequest('supplier_products?on_conflict=supplier_id,supplier_sku',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])});return json(res,201,{ok:true,product:row});
+      }
+      if (p === '/api/admin/suppliers/compare' && req.method === 'POST') {
+        const b=await readBody(req),productId=String(b.product_id||''),qty=Math.max(1,Number(b.qty||1));
+        if(!productId)return json(res,400,{error:'product_id is required'});
+        if(!supabaseReady)return json(res,503,{error:'Supabase required'});
+        const rows=await supabaseRequest('supplier_products?select=*,suppliers(id,name,enabled,priority,rating,default_shipping_days)&product_id=eq.'+encodeURIComponent(productId));
+        const scored=(Array.isArray(rows)?rows:[]).filter(x=>x.suppliers?.enabled!==false&&Number(x.stock)>=qty).map(x=>({...x,score:supplierScore(x)})).sort((a,b)=>b.score-a.score);
+        return json(res,200,{product_id:productId,qty,candidates:scored.map(x=>({supplier_id:x.supplier_id,supplier:x.suppliers?.name||x.supplier_id,sku:x.supplier_sku,cost_inr:x.cost_inr,stock:x.stock,shipping_days:x.shipping_days,return_rate_pct:x.return_rate_pct,failure_rate_pct:x.failure_rate_pct,score:x.score}))});
+      }
+      if (p === '/api/admin/orders/route-supplier' && req.method === 'POST') {
+        if(!roleAllows(adminRole,['owner','manager']))return json(res,403,{error:'Manager role required'});
+        const b=await readBody(req);try{return json(res,200,{ok:true,...await routeOrderToSupplier(String(b.order_id||''),b.force===true)})}catch(e){return json(res,400,{error:e.message})}
+      }
+      if (p === '/api/admin/research/live' && req.method === 'POST') {
+        if(!roleAllows(adminRole,['owner','manager','marketing']))return json(res,403,{error:'Research access required'});
+        const b=await readBody(req);try{return json(res,200,await liveResearch(b.query))}catch(e){return json(res,503,{error:e.message})}
+      }
+      if (p === '/api/admin/ads/import' && req.method === 'POST') {
+        if(!roleAllows(adminRole,['owner','manager','marketing']))return json(res,403,{error:'Marketing access required'});
+        try{return json(res,200,{ok:true,...await importAdSpend()})}catch(e){return json(res,503,{error:e.message})}
+      }
+      if (p === '/api/admin/ads/summary' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,{spend_inr:0,rows:[]});
+        const days=Math.max(1,Math.min(90,Number(url.searchParams.get('days')||30))),since=new Date(Date.now()-days*86400000).toISOString().slice(0,10);
+        const rows=await supabaseRequest('ad_spend?select=*&date=gte.'+encodeURIComponent(since)+'&order=date.desc&limit=5000');
+        const spend=(rows||[]).reduce((s,x)=>s+Number(x.spend_inr||0),0),clicks=(rows||[]).reduce((s,x)=>s+Number(x.clicks||0),0),conversions=(rows||[]).reduce((s,x)=>s+Number(x.conversions||0),0);
+        return json(res,200,{days,spend_inr:spend,clicks,conversions,cpa_inr:conversions?spend/conversions:null,rows});
+      }
+      if (p === '/api/admin/notifications/test' && req.method === 'POST') {
+        if(!roleAllows(adminRole,['owner','manager','support']))return json(res,403,{error:'Support access required'});
+        const b=await readBody(req),customer={phone:b.phone,email:b.email},msg=String(b.message||'BBest Globly notification test');
+        try{return json(res,200,{ok:true,results:await notifyCustomer(customer,msg)})}catch(e){return json(res,503,{error:e.message})}
+      }
+      if (p === '/api/orders/return' && req.method === 'POST') {
+        const a=getAuth(req);const b=await readBody(req);if(!a?.session?.customerId)return json(res,401,{error:'login required'});
+        if(!supabaseReady)return json(res,503,{error:'Supabase required'});
+        const orders=loadOrders(),o=orders.find(x=>x.id===String(b.order_id||'')&&(x.customer_id===a.session.customerId||x.customer?.email===a.session.email));
+        if(!o)return json(res,404,{error:'order not found'});
+        if(!['DELIVERED','CONFIRMED'].includes(o.status))return json(res,400,{error:'Return can only be requested for an eligible order'});
+        const id='RET-'+crypto.randomBytes(8).toString('hex');
+        await supabaseRequest('returns',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([{id,order_id:o.id,customer_id:a.session.customerId,reason:String(b.reason||'').slice(0,500),items:Array.isArray(b.items)?b.items.slice(0,50):[],status:'REQUESTED'}])});
+        return json(res,201,{ok:true,id,status:'REQUESTED'});
+      }
+      if (p === '/api/admin/returns' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,[]);
+        const rows=await supabaseRequest('returns?select=*&order=updated_at.desc&limit=200');return json(res,200,Array.isArray(rows)?rows:[]);
+      }
+      if (p.startsWith('/api/admin/returns/') && req.method === 'PATCH') {
+        if(!roleAllows(adminRole,['owner','manager','support']))return json(res,403,{error:'Support access required'});
+        if(!supabaseReady)return json(res,503,{error:'Supabase required'});
+        const id=decodeURIComponent(p.slice('/api/admin/returns/'.length)),b=await readBody(req),patch={updated_at:new Date().toISOString()};
+        if(['REQUESTED','APPROVED','REJECTED','RECEIVED','REFUNDED','CLOSED'].includes(String(b.status||'')))patch.status=String(b.status);
+        if(b.resolution!==undefined)patch.resolution=String(b.resolution).slice(0,500);
+        await supabaseRequest('returns?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify(patch)});await auditAdmin(adminRole,'UPDATE_RETURN','return',id,patch);return json(res,200,{ok:true,id,...patch});
+      }
+      if (p === '/api/admin/refunds' && req.method === 'POST') {
+        if(!roleAllows(adminRole,['owner','finance']))return json(res,403,{error:'Finance role required'});
+        const b=await readBody(req);if(!supabaseReady)return json(res,503,{error:'Supabase required'});
+        const order=loadOrders().find(x=>x.id===String(b.order_id||''));if(!order)return json(res,404,{error:'order not found'});
+        const amount=Math.max(0,Number(b.amount_inr||0));if(!amount||amount>Number(order.totals?.total_inr||0))return json(res,400,{error:'invalid refund amount'});
+        const id='RF-'+crypto.randomBytes(8).toString('hex');let gatewayRef=null,status='PENDING';
+        if(b.execute===true){
+          if(!order.payment?.razorpay_payment_id)return json(res,400,{error:'No Razorpay payment id on this order'});
+          const rr=await razorpayRefund(order.payment.razorpay_payment_id,amount,{order_id:order.id,reason:String(b.reason||'')});gatewayRef=rr?.id||null;status='PROCESSED';
+        }
+        await supabaseRequest('refunds',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([{id,order_id:order.id,return_id:b.return_id||null,amount_inr:amount,reason:String(b.reason||'').slice(0,500),status,gateway:'razorpay',gateway_ref:gatewayRef}])});
+        await auditAdmin(adminRole,'CREATE_REFUND','refund',id,{order_id:order.id,amount_inr:amount,status});return json(res,201,{ok:true,id,status,gateway_ref:gatewayRef});
+      }
+      if (p === '/api/admin/finance/reconciliation' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,{sales_inr:0,refunds_inr:0,ad_spend_inr:0,expenses_inr:0,gst_output_inr:0,net_before_tax_inr:0});
+        const days=Math.max(1,Math.min(365,Number(url.searchParams.get('days')||30))),since=new Date(Date.now()-days*86400000).toISOString().slice(0,10);
+        const refunds=await supabaseRequest('refunds?select=amount_inr,status&created_at=gte.'+encodeURIComponent(new Date(since).toISOString())+'&limit=5000');
+        const ads=await supabaseRequest('ad_spend?select=spend_inr&date=gte.'+encodeURIComponent(since)+'&limit=5000');
+        const fin=await supabaseRequest('financial_entries?select=*&entry_date=gte.'+encodeURIComponent(since)+'&limit=5000');
+        const sales=loadOrders().filter(o=>o.status!=='CANCELLED'&&new Date(o.created||0)>=new Date(since)).reduce((s,o)=>s+Number(o.totals?.total_inr||0),0);
+        const refundTotal=(refunds||[]).filter(x=>x.status==='PROCESSED').reduce((s,x)=>s+Number(x.amount_inr||0),0),adTotal=(ads||[]).reduce((s,x)=>s+Number(x.spend_inr||0),0);
+        const expenses=(fin||[]).filter(x=>!['SALE','GST_OUTPUT'].includes(x.type)).reduce((s,x)=>s+Number(x.amount_inr||0),0);
+        const gstRate=Number(process.env.DEFAULT_GST_RATE||0),gst=sales*gstRate/100;
+        return json(res,200,{days,sales_inr:sales,refunds_inr:refundTotal,ad_spend_inr:adTotal,expenses_inr:expenses,gst_output_inr:gst,net_before_tax_inr:sales-refundTotal-adTotal-expenses,note:'GST is an estimate from DEFAULT_GST_RATE; confirm tax treatment and filings with a qualified professional.'});
+      }
+      if (p === '/api/admin/finance/entries' && req.method === 'POST') {
+        if(!roleAllows(adminRole,['owner','finance']))return json(res,403,{error:'Finance role required'});
+        if(!supabaseReady)return json(res,503,{error:'Supabase required'});
+        const b=await readBody(req),id='FE-'+crypto.randomBytes(8).toString('hex'),rate=Math.max(0,Number(b.gst_rate||0)),amount=Math.max(0,Number(b.amount_inr||0));
+        const row={id,entry_date:String(b.entry_date||new Date().toISOString().slice(0,10)),type:String(b.type||'EXPENSE').slice(0,40),category:String(b.category||'Other').slice(0,80),amount_inr:amount,gst_rate:rate,gst_amount_inr:amount*rate/100,reference_id:String(b.reference_id||'').slice(0,100)||null,notes:String(b.notes||'').slice(0,500),metadata:b.metadata&&typeof b.metadata==='object'?b.metadata:{}};
+        await supabaseRequest('financial_entries',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([row])});await auditAdmin(adminRole,'CREATE_FINANCIAL_ENTRY','financial_entry',id,row);return json(res,201,{ok:true,entry:row});
+      }
+
       if (p === '/api/admin/readiness' && req.method === 'GET') {
         return json(res,200,{
           ok:true,

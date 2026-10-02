@@ -176,6 +176,22 @@ async function approvalView(){
 
 function initAISidePanel(){ /* AI Manager is rendered inside Approval Center. */ }
 $$('.nav-btn').forEach(b=>b.onclick=()=>setView(b.dataset.view));
+$('#forgotBtn').onclick=async()=>{
+  const key=prompt('Enter your ADMIN_RESET_KEY from Render Environment Variables:');
+  if(key===null)return;
+  const pw=prompt('Set a new admin password (minimum 10 characters):');
+  if(pw===null)return;
+  try{
+    const r=await fetch('/api/admin/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recovery_key:key,new_password:pw})});
+    const d=await r.json();
+    if(!r.ok) throw Error(d.error||'Password reset failed');
+    $('#loginErr').textContent=d.message||'Password reset successfully. Please log in.';
+    $('#loginErr').style.color='var(--ok)';
+  }catch(e){
+    $('#loginErr').textContent=e.message;
+    $('#loginErr').style.color='var(--danger)';
+  }
+};
 $('#loginBtn').onclick=async()=>{try{const r=await fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('#loginUser').value,password:$('#loginPass').value})});const d=await r.json();if(!r.ok)throw Error(d.error);token=d.token;localStorage.setItem('bg_admin',token);$('#loginPanel').classList.add('hidden');$('#appPanel').classList.remove('hidden');await refresh();render();checkAI()}catch(e){$('#loginErr').textContent=e.message}};
 $('#logoutBtn').onclick=()=>{token='';localStorage.removeItem('bg_admin');location.reload()};
 async function checkAI(){try{const d=await api('/api/admin/ai/status');$('#integrationStatus').textContent=d.configured?'AI connected':'AI needs setup'}catch{$('#integrationStatus').textContent='AI unavailable'}}

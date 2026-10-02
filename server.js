@@ -1076,8 +1076,12 @@ async function agentCommand(command) {
   const globalControl=await getAgentControl('global');
   if(globalControl.enabled===false) return {configured:aiReady,reply:'AI Kill Switch is ON. No agent action will be created.',actions:[]};
   let qikink_catalog = [];
+  let customer_marketing_intelligence = null;
   if (/qikink|supplier|dropship|fulfill|catalog/i.test(command)) {
     try { qikink_catalog = await fetchQikinkPublicCatalog(); } catch {}
+  }
+  if(/marketing|offer|customer|campaign|discount/i.test(command)){
+    try { customer_marketing_intelligence = await buildCustomerMarketingIntelligence(30); } catch(e) { customer_marketing_intelligence = {customers:[],error:e.message}; }
   }
   const system = [
     'You are the BBest Globly Agentic Business Manager.',
@@ -1085,7 +1089,7 @@ async function agentCommand(command) {
     'Plan concrete business actions from the owner request using ONLY supplied store data and business knowledge.',
     'Never fabricate live market data, supplier facts, sales, stock, ad performance, customer facts or delivery promises.',
     'Return JSON ONLY with this exact shape:',
-    '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status|create_offer","payload":{},"reason":"string","requiresApproval":true}]}',
+    '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status|create_offer|create_customer_offer","payload":{},"reason":"string","requiresApproval":true}]}',
     'Every state-changing action returned must have requiresApproval=true. Never bypass the approval workflow.',
     'Respect the configured minimum margin, maximum discount and refund limits supplied in agent controls when making recommendations.',
     'For add_product, payload may include name, category, tagline, price_inr, compare_at_inr, img, badges, description, features, sku, supplier, supplier_sku, supplier_cost_inr, stock.',
@@ -1093,12 +1097,12 @@ async function agentCommand(command) {
     'For delete_product, payload must include id.',
     'For set_site_config, payload may include hero and theme fields only.',
     'For set_order_status, payload must include id and status.',
-    'For create_offer, payload may include id, code, name, discount_type, discount_value, min_order_inr, max_uses, starts_at, ends_at, active. For create_customer_offer, payload must include customer_id and product_id when the offer is product-specific, plus name, discount_type and discount_value.',
+    'For create_offer, payload may include id, code, name, discount_type, discount_value, min_order_inr, max_uses, starts_at, ends_at, active. For create_customer_offer, use ONLY a customer_id from customer_marketing_intelligence with marketing_opt_in=true, include product_id when a specific product is being offered, and include name, discount_type and discount_value.',
     'Clearly separate REAL DATA, AI ANALYSIS, AI RECOMMENDATION and NEEDS OWNER APPROVAL.'
   ].join(' ');
   const raw=await callAI([
     {role:'system',content:system},
-    {role:'user',content:JSON.stringify({command,context:currentAIContext({qikink_catalog})})}
+    {role:'user',content:JSON.stringify({command,context:currentAIContext({qikink_catalog,customer_marketing_intelligence})})}
   ],{temperature:0.1});
   const parsed=safeJson(raw);
   if(!parsed) {

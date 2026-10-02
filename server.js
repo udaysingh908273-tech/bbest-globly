@@ -1476,7 +1476,8 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/api/support/tickets' && req.method === 'POST') {
       const b=await readBody(req);
-      const auth=getAuth(req);\n      if(auth?.session?.customerId){const c=readJSON('customers.json',[]).find(x=>x.id===auth.session.customerId);if(c){b.customer_name=c.name;b.customer_email=c.email;b.customer_phone=c.phone;}}
+      const auth=getAuth(req);
+      if(auth?.session?.customerId){const c=readJSON('customers.json',[]).find(x=>x.id===auth.session.customerId);if(c){b.customer_name=c.name;b.customer_email=c.email;b.customer_phone=c.phone;}}
       const subject=String(b.subject||'Support request').trim().slice(0,160);
       const id='TCK-'+Date.now().toString(36).toUpperCase()+'-'+crypto.randomBytes(3).toString('hex').toUpperCase();
       const message=String(b.message||'').trim().slice(0,3000);

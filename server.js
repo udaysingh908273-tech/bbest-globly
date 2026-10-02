@@ -982,7 +982,6 @@ function safeJson(text) {
 function currentAIContext(extra={}) {
   return {
     business_knowledge: loadBusinessKnowledge(),
-    business_strategy_knowledge: loadBusinessStrategyKnowledge(),
     site_config: loadSiteConfig(),
     products: loadCatalog().map(x=>({
       id:x.id,name:x.name,category:x.category,price_inr:x.price_inr,

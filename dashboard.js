@@ -424,7 +424,7 @@ function initGlobalSearch(){
         for(const p of products)if((p.name+" "+p.category+" "+p.sku).toLowerCase().includes(q))results.push('<button class="search-result" data-go-view="products"><strong>Product</strong> · '+esc(p.name)+'<span>'+money(p.price_inr)+'</span></button>');
         for(const o of orders)if((o.id+" "+(o.customer?.name||"")+" "+(o.customer?.email||"")).toLowerCase().includes(q))results.push('<button class="search-result" data-go-view="orders"><strong>Order</strong> · '+esc(o.id)+'<span>'+money(o.totals?.total_inr)+'</span></button>');
         $("#globalSearchResults").innerHTML=results.length?results.slice(0,20).join(''):'<div class="notice">No match found.</div>';
-        $('.search-result').forEach(x=>x.onclick=()=>{setView(x.dataset.goView);modal.remove()});
+        $$('.search-result').forEach(x=>x.onclick=()=>{setView(x.dataset.goView);modal.remove()});
       };
       modal.onclick=e=>{if(e.target===modal)modal.remove()};
     }

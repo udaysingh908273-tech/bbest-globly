@@ -982,6 +982,7 @@ function safeJson(text) {
 function currentAIContext(extra={}) {
   return {
     business_knowledge: loadBusinessKnowledge(),
+    business_strategy_knowledge: loadBusinessStrategyKnowledge(),
     site_config: loadSiteConfig(),
     products: loadCatalog().map(x=>({
       id:x.id,name:x.name,category:x.category,price_inr:x.price_inr,
@@ -996,6 +997,7 @@ function currentAIContext(extra={}) {
     ...extra
   };
 }
+
 function loadCustomerSupportKnowledge(){
   return readJSON('customer_support_knowledge.json',{
     version:'fallback',
@@ -1055,122 +1057,6 @@ async function buildCustomerMarketingIntelligence(days=30){
   return {period_days:Number(days||30),customers:output.slice(0,200),note:'Intent score uses product views, searches, carts, checkouts and purchases. It does not infer sensitive traits.'};
 }
 
-async function buildBusinessIntelligence(days=30){
-  const period=Math.max(7,Math.min(90,Number(days||30)));
-  const now=Date.now(),currentSince=new Date(now-period*86400000).toISOString(),priorSince=new Date(now-period*2*86400000).toISOString();
-  const catalog=loadCatalog(),orders=loadOrders();
-  const byId={};
-  for(const p of catalog){
-    byId[p.id]={
-      id:p.id,name:p.name,category:p.category||'',price_inr:Number(p.price_inr||0),supplier_cost_inr:Number(p.supplier_cost_inr||0),
-      stock:Number(p.stock||0),views:0,add_to_cart:0,checkouts:0,units_sold:0,sales_inr:0,prior_views:0,prior_add_to_cart:0,prior_units_sold:0,
-      gross_margin_pct:productGrossMarginPct(p,p.price_inr)
-    };
-  }
-  let analytics=[];
-  if(supabaseReady){
-    try{
-      analytics=await supabaseRequest('analytics_events?select=event_name,product_id,metadata,created_at&created_at=gte.'+encodeURIComponent(priorSince)+'&order=created_at.desc&limit=10000');
-    }catch{}
-  }
-  for(const ev of (Array.isArray(analytics)?analytics:[])){
-    const pid=String(ev.product_id||''); if(!pid||!byId[pid]) continue;
-    const current=new Date(ev.created_at).getTime()>=now-period*86400000;
-    if(ev.event_name==='product_view') current?byId[pid].views++:byId[pid].prior_views++;
-    if(ev.event_name==='add_to_cart') current?byId[pid].add_to_cart++:byId[pid].prior_add_to_cart++;
-  }
-  for(const o of orders){
-    const t=new Date(o.created||0).getTime();if(!t||t<now-period*2*86400000||o.status==='CANCELLED')continue;
-    const current=t>=now-period*86400000;
-    for(const item of (o.items||[])){
-      const pid=String(item.id||'');if(!byId[pid])continue;
-      const qty=Math.max(0,Number(item.qty)||0),sales=qty*Number(item.price_inr||byId[pid].price_inr||0);
-      if(current){byId[pid].units_sold+=qty;byId[pid].sales_inr+=sales}else{byId[pid].prior_units_sold+=qty}
-    }
-  }
-  const assumptions=loadBusinessStrategyKnowledge().pricing_strategy?.core_formula||'Contribution profit = selling price - variable costs';
-  const controls=await getAgentControl('pricing');
-  const productMetrics=Object.values(byId).map(p=>{
-    const viewDelta=p.prior_views?((p.views-p.prior_views)/p.prior_views)*100:(p.views>0?100:null);
-    const unitDelta=p.prior_units_sold?((p.units_sold-p.prior_units_sold)/p.prior_units_sold)*100:(p.units_sold>0?100:null);
-    const dailyUnits=p.units_sold/period;
-    const stockCoverageDays=dailyUnits>0?p.stock/dailyUnits:null;
-    const grossProfit=p.sales_inr-(p.supplier_cost_inr*p.units_sold);
-    const signal=(p.units_sold>0?'purchase activity':p.add_to_cart>0?'cart intent':p.views>0?'traffic':'no observed traffic');
-    return {
-      ...p,
-      add_to_cart_rate:p.views>0?(p.add_to_cart/p.views)*100:null,
-      units_per_day:Number(dailyUnits.toFixed(3)),
-      stock_coverage_days:stockCoverageDays==null?null:Number(stockCoverageDays.toFixed(1)),
-      estimated_gross_profit_inr:Number(grossProfit.toFixed(2)),
-      estimated_gross_margin_on_recorded_sales_pct:p.sales_inr>0?(grossProfit/p.sales_inr)*100:null,
-      view_change_pct:viewDelta==null?null:Number(viewDelta.toFixed(1)),
-      unit_change_pct:unitDelta==null?null:Number(unitDelta.toFixed(1)),
-      primary_signal:signal,
-      governance_margin_floor_pct:Number(controls.min_margin_pct||0)
-    };
-  });
-  let supportIntents={},searches={};
-  if(supabaseReady){
-    try{
-      const rows=await supabaseRequest('support_interactions?select=intent,created_at&created_at=gte.'+encodeURIComponent(currentSince)+'&limit=5000');
-      for(const x of (Array.isArray(rows)?rows:[])){const k=String(x.intent||'general');supportIntents[k]=(supportIntents[k]||0)+1}
-    }catch{}
-    try{
-      const rows=await supabaseRequest('analytics_events?select=event_name,metadata,created_at&event_name=eq.product_search&created_at=gte.'+encodeURIComponent(currentSince)+'&order=created_at.desc&limit=5000');
-      for(const x of (Array.isArray(rows)?rows:[])){const q=String(x.metadata?.query||'').trim().toLowerCase().slice(0,120);if(q)searches[q]=(searches[q]||0)+1}
-    }catch{}
-  }
-  let adSpendInr=0,refundInr=0;
-  if(supabaseReady){
-    try{
-      const ads=await supabaseRequest('ad_spend?select=spend_inr,date&date=gte.'+encodeURIComponent(new Date(currentSince).toISOString().slice(0,10))+'&limit=5000');
-      adSpendInr=(ads||[]).reduce((s,x)=>s+Number(x.spend_inr||0),0);
-    }catch{}
-    try{
-      const rr=await supabaseRequest('refunds?select=amount_inr,status,created_at&created_at=gte.'+encodeURIComponent(currentSince)+'&limit=5000');
-      refundInr=(rr||[]).filter(x=>x.status==='PROCESSED').reduce((s,x)=>s+Number(x.amount_inr||0),0);
-    }catch{}
-  }
-  const activeOrders=orders.filter(o=>o.status!=='CANCELLED'&&new Date(o.created||0).getTime()>=now-period*86400000);
-  const salesInr=activeOrders.reduce((s,o)=>s+Number(o.totals?.total_inr||0),0);
-  const productUnits=productMetrics.reduce((s,p)=>s+p.units_sold,0);
-  const dataQuality={
-    analytics_events:analytics.length>0,
-    product_sales:productUnits>0,
-    customer_searches:Object.keys(searches).length>0,
-    support_interactions:Object.keys(supportIntents).length>0,
-    ads_spend:adSpendInr>0
-  };
-  return {
-    period_days:period,
-    generated_at:new Date().toISOString(),
-    business_strategy:loadBusinessStrategyKnowledge(),
-    controls:{pricing_margin_floor_pct:Number(controls.min_margin_pct||0),pricing_mode:controls.mode,global_action_governance:'state-changing actions require approval'},
-    business_snapshot:{
-      active_orders:activeOrders.length,sales_inr:salesInr,refunds_inr:refundInr,ad_spend_inr:adSpendInr,active_catalogue_products:catalog.filter(x=>x.published!==false).length
-    },
-    product_metrics:productMetrics,
-    search_demand:Object.entries(searches).sort((a,b)=>b[1]-a[1]).slice(0,25).map(([query,count])=>({query,count})),
-    support_intents:Object.entries(supportIntents).sort((a,b)=>b[1]-a[1]).map(([intent,count])=>({intent,count})),
-    decision_signals:[
-      'Use purchase/cart/checkout signals as stronger evidence than views alone.',
-      'Compare current period with prior period before calling demand rising or falling.',
-      'Do not make a scale/stop decision from low sample data without labeling confidence.',
-      'Use contribution economics when variable costs are available; recorded supplier-cost margin alone is only a gross-margin estimate.'
-    ],
-    data_quality:dataQuality,
-    future_channels:{
-      website:true,
-      research_provider:!!(RESEARCH_API_URL&&RESEARCH_API_KEY),
-      google_merchant_or_ads:false,
-      meta:false,
-      supplier_feeds:!!(process.env.QIKINK_AUTH_TOKEN||process.env.SUPPLIER_API_URL)
-    },
-    note:'Market movement is only considered live when a connected provider supplies timestamped external data. Internal store signals are calculated from recorded analytics, orders and support data.'
-  };
-}
-
 function detectSupportIntent(message){
   const q=String(message||'').toLowerCase();
   const rules=loadCustomerSupportKnowledge().common_intents||{};
@@ -1197,10 +1083,6 @@ async function recordSupportInteraction({customerId,sessionId,channel,intent,que
 }
 async function askAI(message, context = {}, task = 'general') {
   const supportMode=/customer_support|support|customer/i.test(String(task||''));
-  let strategicIntelligence=null;
-  if(!supportMode){
-    try{ strategicIntelligence=await buildBusinessIntelligence(30); }catch(e){ strategicIntelligence={error:e.message,note:'Strategic intelligence unavailable; use supplied store data only.'}; }
-  }
   const system = supportMode ? [
     'You are BBest Globly AI Customer Support, a 24x7 ecommerce support specialist.',
     'Resolve supported customer enquiries end-to-end from the supplied current store data.',
@@ -1218,29 +1100,22 @@ async function askAI(message, context = {}, task = 'general') {
     'Do not make up coupons or discounts. Personalized offers are only discussed when an active offer exists in supplied context.',
     'Answer first, then provide the next practical action. Be friendly, clear and concise.'
   ].join(' ') : [
-    'You are the BBest Globly AI Strategic Business Manager.',
-    'Operate like a cross-functional ecommerce management team: business strategy, product research, catalog, pricing, offers, marketing, customer insight, suppliers, orders, support and finance.',
-    'Use business_strategy_knowledge as the operating playbook and business_intelligence as the current evidence layer.',
-    'Never fabricate live market movement, competitor prices, supplier facts, demand, sales, stock, ad performance or customer facts.',
-    'Distinguish REAL DATA, CALCULATED METRIC, AI ANALYSIS, AI RECOMMENDATION, UNKNOWN and NEEDS OWNER APPROVAL.',
-    'Product lifecycle decisions must use sufficient evidence and a confidence level.',
-    'Pricing and discounts must consider contribution economics when variable costs are available; do not treat supplier-cost gross margin as full profitability.',
-    'Use stronger demand signals (purchases, carts, checkout, high-intent searches) ahead of raw views.',
-    'Identify what changed, why it matters, the proposed action, expected economic effect, risks, confidence and the evidence period.',
-    'When external market data is not connected, explicitly say that the recommendation is based on internal store signals and/or AI analysis, not live external market data.',
-    'Never silently change products, prices, promotions, paid ads, supplier commitments or public site content; state-changing actions go through the owner approval workflow.',
-    'Be practical, concise and transparent about uncertainty.'
+    'You are the BBest Globly AI Business Manager.',
+    'Use supplied store data as authoritative and never invent live market data, sales, supplier facts, stock or customer facts.',
+    'Distinguish REAL DATA, AI ANALYSIS, AI RECOMMENDATION and NEEDS OWNER APPROVAL.',
+    'Public product publishing, deletion, major price changes, public site redesigns and paid advertising require owner approval.',
+    'For marketing work, customer intent data may be used only when the customer has opted in to personalized marketing.',
+    'Use business_strategy_knowledge as the strategic operating playbook for product lifecycle, pricing, discounts, inventory, research and marketing decisions. Never invent live market data. State evidence, assumptions, confidence and approval needs. Be practical and concise.'
   ].join(' ');
-  const user=JSON.stringify({task,message,context:currentAIContext({...context,business_intelligence:strategicIntelligence})});
+  const user=JSON.stringify({task,message,context:currentAIContext({...context,customer_support_knowledge:supportMode?buildCustomerSupportKnowledge():undefined})});
   return {configured:true,reply:await callAI([{role:'system',content:system},{role:'user',content:user}])};
 }
+
 async function agentCommand(command) {
   const globalControl=await getAgentControl('global');
   if(globalControl.enabled===false) return {configured:aiReady,reply:'AI Kill Switch is ON. No agent action will be created.',actions:[]};
   let qikink_catalog = [];
   let customer_marketing_intelligence = null;
-  let business_intelligence = null;
-  try { business_intelligence = await buildBusinessIntelligence(30); } catch(e) { business_intelligence = {error:e.message}; }
   if (/qikink|supplier|dropship|fulfill|catalog/i.test(command)) {
     try { qikink_catalog = await fetchQikinkPublicCatalog(); } catch {}
   }
@@ -1248,30 +1123,25 @@ async function agentCommand(command) {
     try { customer_marketing_intelligence = await buildCustomerMarketingIntelligence(30); } catch(e) { customer_marketing_intelligence = {customers:[],error:e.message}; }
   }
   const system = [
-    'You are the BBest Globly Agentic Strategic Business Manager.',
-    'Act like a cross-functional ecommerce operations and strategy team: orders, suppliers, product research, catalog, pricing, offers, marketing, SEO, support, finance and owner reporting.',
-    'Use business_strategy_knowledge as the strategic operating manual and business_intelligence as the current evidence layer.',
-    'Plan concrete business actions from the owner request using ONLY supplied store data and verified connected provider data.',
+    'You are the BBest Globly Agentic Business Manager.',
+    'Act like a cross-functional ecommerce operations team: orders, suppliers, product research, catalog, pricing, offers, support, finance and owner reporting.',
+    'Plan concrete business actions from the owner request using ONLY supplied store data, verified provider data and business knowledge. Use business strategy knowledge for product lifecycle, pricing, discounts, inventory, research and marketing decisions.',
     'Never fabricate live market data, supplier facts, sales, stock, ad performance, customer facts or delivery promises.',
     'Return JSON ONLY with this exact shape:',
     '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status|create_offer|create_customer_offer","payload":{},"reason":"string","requiresApproval":true}]}',
     'Every state-changing action returned must have requiresApproval=true. Never bypass the approval workflow.',
-    'Respect configured minimum margin and maximum discount controls as governance guardrails; they are not proof of profitability.',
-    'For product lifecycle, decide whether evidence supports TEST, VALIDATING, SCALING, CORE, OPTIMIZE, MARKDOWN or STOP. Show evidence period and confidence.',
-    'For pricing, use contribution economics when known and call out unknown variable costs. For discounts, state the objective and expected effect on contribution.',
-    'For research, combine internal demand signals with connected external research when available. Never call unconnected market data live.',
-    'For marketing, connect product demand, customer intent and channel performance; future web/social connectors will supply timestamped signals.',
+    'Respect the configured minimum margin, maximum discount and refund limits supplied in agent controls when making recommendations.',
     'For add_product, payload may include name, category, tagline, price_inr, compare_at_inr, img, badges, description, features, sku, supplier, supplier_sku, supplier_cost_inr, stock.',
     'For update_product, payload must include id plus fields to update.',
     'For delete_product, payload must include id.',
     'For set_site_config, payload may include hero and theme fields only.',
     'For set_order_status, payload must include id and status.',
     'For create_offer, payload may include id, code, name, discount_type, discount_value, min_order_inr, max_uses, starts_at, ends_at, active. For create_customer_offer, use ONLY a customer_id from customer_marketing_intelligence with marketing_opt_in=true, include product_id when a specific product is being offered, and include name, discount_type and discount_value.',
-    'Clearly separate REAL DATA, CALCULATED METRIC, AI ANALYSIS, AI RECOMMENDATION, UNKNOWN and NEEDS OWNER APPROVAL.'
+    'Clearly separate REAL DATA, AI ANALYSIS, AI RECOMMENDATION and NEEDS OWNER APPROVAL.'
   ].join(' ');
   const raw=await callAI([
     {role:'system',content:system},
-    {role:'user',content:JSON.stringify({command,context:currentAIContext({qikink_catalog,customer_marketing_intelligence,business_intelligence})})}
+    {role:'user',content:JSON.stringify({command,context:currentAIContext({qikink_catalog,customer_marketing_intelligence})})}
   ],{temperature:0.1});
   const parsed=safeJson(raw);
   if(!parsed) {
@@ -2007,10 +1877,27 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (p === '/api/admin/business/intelligence' && req.method === 'GET') {
-        try{
-          const days=Math.max(7,Math.min(90,Number(url.searchParams.get('days')||30)));
-          return json(res,200,await buildBusinessIntelligence(days));
-        }catch(e){ return json(res,502,{error:e.message}); }
+        const days=Math.max(7,Math.min(90,Number(url.searchParams.get('days')||30)));
+        const since=new Date(Date.now()-days*86400000);
+        const orders=loadOrders().filter(o=>o.status!=='CANCELLED'&&new Date(o.created||0)>=since);
+        const catalog=loadCatalog();
+        const productMetrics=catalog.map(p=>{
+          let units=0,sales=0;
+          for(const o of orders) for(const item of (o.items||[])) if(item.id===p.id){
+            const q=Math.max(0,Number(item.qty)||0); units+=q; sales+=q*Number(item.price_inr||p.price_inr||0);
+          }
+          const cost=Number(p.supplier_cost_inr||0);
+          const gross=sales-(cost*units);
+          return {id:p.id,name:p.name,category:p.category||'',price_inr:Number(p.price_inr||0),supplier_cost_inr:cost,stock:Number(p.stock||0),units_sold:units,sales_inr:sales,estimated_gross_profit_inr:gross,estimated_gross_margin_pct:sales>0?(gross/sales)*100:null};
+        });
+        return json(res,200,{
+          period_days:days,
+          generated_at:new Date().toISOString(),
+          business_strategy:loadBusinessStrategyKnowledge(),
+          business_snapshot:{active_orders:orders.length,sales_inr:orders.reduce((s,o)=>s+Number(o.totals?.total_inr||0),0),active_catalogue_products:catalog.filter(x=>x.published!==false).length},
+          product_metrics:productMetrics,
+          note:'Internal store intelligence only. External market movement requires a configured research provider.'
+        });
       }
 
       if (p === '/api/admin/analytics/summary' && req.method === 'GET') {

@@ -652,3 +652,178 @@ body{
   .grid{grid-template-columns:1fr}
   .category-grid{grid-template-columns:1fr}
 }
+
+
+/* ===== Department navigation + safe in-app back ===== */
+.page-back{
+  padding-top:18px;
+  padding-bottom:0;
+}
+.store-back{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  min-height:40px;
+  padding:8px 13px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:rgba(255,255,255,.9);
+  color:var(--ink);
+  font-size:.82rem;
+  font-weight:800;
+  cursor:pointer;
+  box-shadow:0 5px 16px rgba(16,24,40,.045);
+  transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease;
+}
+.store-back:hover{
+  transform:translateX(-2px);
+  border-color:#c7d2fe;
+  box-shadow:0 9px 24px rgba(16,24,40,.08);
+}
+.shop-topline{
+  display:flex;
+  align-items:flex-start;
+  gap:18px;
+  margin-bottom:24px;
+}
+.shop-topline .store-back{margin-top:3px}
+.shop-topline h1{margin:3px 0 3px}
+.shop-topline p{margin:0}
+.department-rail{
+  display:flex;
+  gap:8px;
+  overflow-x:auto;
+  padding:4px 2px 14px;
+  margin-bottom:7px;
+  scrollbar-width:none;
+}
+.department-rail::-webkit-scrollbar{display:none}
+.department-rail button{
+  flex:none;
+  display:inline-flex;
+  align-items:center;
+  gap:7px;
+  border:1px solid var(--line);
+  border-radius:999px;
+  background:#fff;
+  color:#475467;
+  padding:9px 13px;
+  font-size:.78rem;
+  font-weight:800;
+  cursor:pointer;
+  transition:.2s ease;
+}
+.department-rail button:hover{
+  transform:translateY(-1px);
+  border-color:#c7d2fe;
+  color:var(--ink);
+}
+.department-rail button.on{
+  background:#101828;
+  border-color:#101828;
+  color:#fff;
+}
+.category-grid-main{
+  grid-template-columns:repeat(4,minmax(0,1fr));
+}
+.category-tile-lg{
+  min-height:190px;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  text-align:left;
+}
+.category-icon{
+  width:42px;
+  height:42px;
+  display:grid;
+  place-items:center;
+  border-radius:14px;
+  background:var(--accent-soft);
+  color:var(--accent);
+  font-size:1.05rem;
+  font-weight:900;
+  margin-bottom:13px;
+}
+.category-tile-lg .category-num{
+  position:absolute;
+  right:17px;
+  top:18px;
+}
+.category-tile-lg strong{margin-top:0}
+.category-tile-lg span:not(.category-icon):not(.category-num){
+  margin-top:7px;
+  line-height:1.4;
+}
+.category-tile-lg small{
+  margin-top:auto;
+  color:var(--accent);
+  font-size:.72rem;
+  font-weight:850;
+}
+.subcat-showcase{
+  padding-top:52px;
+}
+.subcat-pills{
+  display:flex;
+  flex-wrap:wrap;
+  gap:9px;
+  margin-top:18px;
+}
+.subcat-pills button{
+  border:1px solid var(--line);
+  background:#fff;
+  border-radius:999px;
+  padding:10px 14px;
+  color:#344054;
+  font-size:.78rem;
+  font-weight:800;
+  cursor:pointer;
+  transition:.2s ease;
+}
+.subcat-pills button:hover{
+  transform:translateY(-2px);
+  border-color:#c7d2fe;
+  box-shadow:0 8px 20px rgba(16,24,40,.06);
+}
+.subcat-pills button span{color:var(--accent);margin-left:4px}
+.category-empty{
+  grid-column:1/-1;
+  min-height:300px;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+  padding:38px 20px;
+  border:1px dashed #d6d9e2;
+  border-radius:24px;
+  background:linear-gradient(145deg,#fff,#fafaff);
+}
+.category-empty-icon{
+  width:54px;height:54px;
+  display:grid;place-items:center;
+  border-radius:18px;
+  background:var(--accent-soft);
+  color:var(--accent);
+  font-size:1.25rem;
+  margin-bottom:12px;
+}
+.category-empty h3{margin:0 0 6px;font-size:1.05rem}
+.category-empty p{max-width:480px;color:var(--muted);font-size:.84rem;margin:0 0 18px}
+@media(max-width:1000px){
+  .category-grid-main{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+@media(max-width:700px){
+  .page-back{padding-top:11px}
+  .shop-topline{gap:11px}
+  .shop-topline .store-back span{display:none}
+  .category-grid-main{grid-template-columns:1fr 1fr}
+  .category-tile-lg{min-height:165px}
+  .department-rail{margin-left:-5px;margin-right:-5px;padding-left:5px}
+  .subcat-showcase{padding-top:40px}
+}
+@media(max-width:430px){
+  .category-grid-main{grid-template-columns:1fr}
+  .category-tile-lg{min-height:140px}
+}

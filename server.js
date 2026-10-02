@@ -210,6 +210,72 @@ const loadOrders = () => readJSON('orders.json', []);
 const saveOrders = o => writeJSON('orders.json', o);
 
 const RZP_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
+const QIKINK_AUTH_TOKEN = process.env.QIKINK_AUTH_TOKEN || '';
+const QIKINK_SHIPPING = String(process.env.QIKINK_SHIPPING || '1') === '1';
+const QIKINK_AUTO_FULFILL = String(process.env.QIKINK_AUTO_FULFILL || 'false').toLowerCase() === 'true';
+const qikinkReady = !!QIKINK_AUTH_TOKEN;
+
+async function qikinkCreateOrder(order) {
+  if(!qikinkReady) throw new Error('Qikink is not configured. Add QIKINK_AUTH_TOKEN in Render.');
+  if(order.supplier_order_id && order.supplier === 'Qikink') return {alreadyCreated:true,supplier_order_id:order.supplier_order_id};
+  const catalog=loadCatalog();
+  const line_items=(order.items||[]).map(item=>{
+    const p=catalog.find(x=>x.id===item.id);
+    const sku=p?.supplier_sku || p?.sku;
+    if(!sku) throw new Error('Missing Qikink SKU for product: '+item.name);
+    return {
+      search_from_my_products: true,
+      price: Number(item.price_inr||0),
+      quantity: Number(item.qty||1),
+      sku:String(sku)
+    };
+  });
+  const name=String(order.customer?.name||'Customer').trim().split(/\\s+/);
+  const first_name=name.shift()||'Customer';
+  const last_name=name.join(' ');
+  const payload={
+    auth_token:QIKINK_AUTH_TOKEN,
+    order_number:String(order.id).replace(/[^A-Za-z0-9]/g,'').slice(0,15),
+    qikink_shipping:QIKINK_SHIPPING?1:0,
+    gateway:order.payment?.paid?'online':'cash_on_delivery',
+    total_order_value:Number(order.totals?.total_inr||0),
+    line_items,
+    shipping_address:{
+      first_name:first_name.slice(0,20),
+      last_name:last_name.slice(0,20),
+      address1:String(order.shipping?.address||'').slice(0,80),
+      address2:'',
+      phone:String(order.customer?.phone||'').slice(0,15),
+      email:String(order.customer?.email||'').slice(0,40),
+      city:String(order.shipping?.city||'').slice(0,40),
+      zip:String(order.shipping?.pincode||'').slice(0,10),
+      province:String(order.shipping?.state||'').slice(0,40),
+      country:String(order.shipping?.country||'India').slice(0,40),
+      name:String(order.customer?.name||'Customer').slice(0,40),
+      country_code:'IN'
+    }
+  };
+  const r=await fetch('https://qikink.com/erp2/index.php/api/createOrder',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(payload)
+  });
+  const text=await r.text(); let d=null; try{d=text?JSON.parse(text):null}catch{}
+  if(!r.ok || d?.code!==1) throw new Error('Qikink '+r.status+': '+(d?.msg||d?.message||text||'order creation failed'));
+  const orders=loadOrders();
+  const local=orders.find(x=>x.id===order.id);
+  if(local){
+    local.supplier='Qikink';
+    local.supplier_order_id=String(d.order_id||d.data?.order_id||'');
+    local.supplier_status='ORDER_CREATED';
+    local.fulfillment_state='SUPPLIER_ORDER_CREATED';
+    local.supplier_error=null;
+    local.updated_at=new Date().toISOString();
+    saveOrders(orders);
+  }
+  return {supplier:'Qikink',supplier_order_id:d.order_id||d.data?.order_id||null,supplier_status:'ORDER_CREATED'};
+}
+
 const SHIPROCKET_EMAIL = process.env.SHIPROCKET_EMAIL || '';
 const SHIPROCKET_PASSWORD = process.env.SHIPROCKET_PASSWORD || '';
 const SHIPROCKET_PICKUP_LOCATION = process.env.SHIPROCKET_PICKUP_LOCATION || '';
@@ -690,6 +756,23 @@ const server = http.createServer(async (req, res) => {
       const a = getAuth(req);
       if (!a || a.session.admin !== true) return json(res, 401, { error: 'admin access required' });
 
+      if (p === '/api/admin/suppliers/qikink/status' && req.method === 'GET') {
+        return json(res,200,{configured:qikinkReady,shipping:QIKINK_SHIPPING,autoFulfill:QIKINK_AUTO_FULFILL,note:'Qikink order forwarding requires a supplier SKU on each product. Product catalogue import is not assumed from the order API.'});
+      }
+
+      if (p.startsWith('/api/admin/suppliers/qikink/orders/') && req.method === 'POST') {
+        const id=decodeURIComponent(p.slice('/api/admin/suppliers/qikink/orders/'.length));
+        const orders=loadOrders(); const o=orders.find(x=>x.id===id);
+        if(!o) return json(res,404,{error:'order not found'});
+        if(o.status==='CANCELLED') return json(res,400,{error:'order cancelled'});
+        try{return json(res,200,{ok:true,orderId:id,...await qikinkCreateOrder(o)})}
+        catch(e){
+          const latest=loadOrders(), local=latest.find(x=>x.id===id);
+          if(local){local.supplier='Qikink';local.supplier_status='ERROR';local.supplier_error=e.message;local.updated_at=new Date().toISOString();saveOrders(latest)}
+          return json(res,502,{error:e.message});
+        }
+      }
+
       if (p === '/api/admin/products' && req.method === 'GET') return json(res, 200, loadCatalog());
       if (p === '/api/admin/products' && req.method === 'POST') {
         try {
@@ -919,6 +1002,7 @@ const server = http.createServer(async (req, res) => {
       o.payment = { method: 'UPI/Card (Razorpay)', paid: true, payment_id: b.razorpay_payment_id, paid_at: new Date().toISOString() };
       o.razorpay_payment_id=String(b.razorpay_payment_id); o.status = 'CONFIRMED'; o.fulfillment_state='READY_FOR_FULFILLMENT'; o.updated_at=new Date().toISOString();
       saveOrders(orders);
+      if(QIKINK_AUTO_FULFILL && qikinkReady){ try{await qikinkCreateOrder(o);}catch(e){console.error('[qikink auto fulfill]',e.message);} }
       if(SHIPROCKET_AUTO_FULFILL){ try{await createShiprocketOrder(o);}catch(e){console.error('[shiprocket auto fulfill]',e.message);} }
       console.log('[payment] verified:', o.id);
       return json(res, 200, { ok: true });

@@ -1426,6 +1426,12 @@ const server = http.createServer(async (req, res) => {
         return json(res,200,{ok:true,id,...patch});
       }
 
+      if (p === '/api/admin/agent/logs' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,[]);
+        const rows=await supabaseRequest('agent_logs?select=*&order=created_at.desc&limit=100');
+        return json(res,200,Array.isArray(rows)?rows:[]);
+      }
+
       if (p === '/api/admin/audit-logs' && req.method === 'GET') {
         if(!supabaseReady)return json(res,200,[]);
         const rows=await supabaseRequest('admin_audit_logs?select=*&order=created_at.desc&limit=100');
@@ -1519,6 +1525,9 @@ const server = http.createServer(async (req, res) => {
           if(type==='add_product'){
             const catalog=loadCatalog();
             const prod=normalizeProductBody({...payload,published:true});
+            const control=await getAgentControl('pricing');
+            const margin=productGrossMarginPct(prod,prod.price_inr);
+            if(margin!==null && margin+1e-9<Number(control.min_margin_pct||0)) return json(res,409,{error:'Agent proposal is below the configured minimum gross margin of '+Number(control.min_margin_pct).toFixed(1)+'%'});
             if(catalog.some(x=>x.id===prod.id||x.name.toLowerCase()===prod.name.toLowerCase())) return json(res,409,{error:'A product with this name/id already exists'});
             catalog.push(prod); writeJSON('products.json',catalog);
             result={ok:true,action:type,product:prod};
@@ -1527,7 +1536,11 @@ const server = http.createServer(async (req, res) => {
             const catalog=loadCatalog(), ix=catalog.findIndex(x=>x.id===payload.id);
             if(ix<0) return json(res,404,{error:'product not found'});
             const merged={...catalog[ix],...payload,id:catalog[ix].id,published:true};
-            catalog[ix]=normalizeProductBody(merged,catalog[ix].id); writeJSON('products.json',catalog);
+            const control=await getAgentControl('pricing');
+            const nextProduct=normalizeProductBody(merged,catalog[ix].id);
+            const margin=productGrossMarginPct(nextProduct,nextProduct.price_inr);
+            if(margin!==null && margin+1e-9<Number(control.min_margin_pct||0)) return json(res,409,{error:'Agent proposal is below the configured minimum gross margin of '+Number(control.min_margin_pct).toFixed(1)+'%'});
+            catalog[ix]=nextProduct; writeJSON('products.json',catalog);
             result={ok:true,action:type,product:catalog[ix]};
           } else if(type==='delete_product'){
             if(!payload.id) return json(res,400,{error:'product id is required'});

@@ -1457,6 +1457,17 @@ const server = http.createServer(async (req, res) => {
       }catch(e){return json(res,401,{error:e.message})}
     }
 
+      if (p === '/api/orders/return' && req.method === 'POST') {
+        const a=getAuth(req);const b=await readBody(req);if(!a?.session?.customerId)return json(res,401,{error:'login required'});
+        if(!supabaseReady)return json(res,503,{error:'Supabase required'});
+        const orders=loadOrders(),o=orders.find(x=>x.id===String(b.order_id||'')&&(x.customer_id===a.session.customerId||x.customer?.email===a.session.email));
+        if(!o)return json(res,404,{error:'order not found'});
+        if(!['DELIVERED','CONFIRMED'].includes(o.status))return json(res,400,{error:'Return can only be requested for an eligible order'});
+        const id='RET-'+crypto.randomBytes(8).toString('hex');
+        await supabaseRequest('returns',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([{id,order_id:o.id,customer_id:a.session.customerId,reason:String(b.reason||'').slice(0,500),items:Array.isArray(b.items)?b.items.slice(0,50):[],status:'REQUESTED'}])});
+        return json(res,201,{ok:true,id,status:'REQUESTED'});
+      }
+
     if (p.startsWith('/api/admin/')) {
       const a = getAuth(req);
       if (!a || a.session.admin !== true) return json(res, 401, { error: 'admin access required' });
@@ -1575,16 +1586,6 @@ const server = http.createServer(async (req, res) => {
         if(!roleAllows(adminRole,['owner','manager','support']))return json(res,403,{error:'Support access required'});
         const b=await readBody(req),customer={phone:b.phone,email:b.email},msg=String(b.message||'BBest Globly notification test');
         try{return json(res,200,{ok:true,results:await notifyCustomer(customer,msg)})}catch(e){return json(res,503,{error:e.message})}
-      }
-      if (p === '/api/orders/return' && req.method === 'POST') {
-        const a=getAuth(req);const b=await readBody(req);if(!a?.session?.customerId)return json(res,401,{error:'login required'});
-        if(!supabaseReady)return json(res,503,{error:'Supabase required'});
-        const orders=loadOrders(),o=orders.find(x=>x.id===String(b.order_id||'')&&(x.customer_id===a.session.customerId||x.customer?.email===a.session.email));
-        if(!o)return json(res,404,{error:'order not found'});
-        if(!['DELIVERED','CONFIRMED'].includes(o.status))return json(res,400,{error:'Return can only be requested for an eligible order'});
-        const id='RET-'+crypto.randomBytes(8).toString('hex');
-        await supabaseRequest('returns',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([{id,order_id:o.id,customer_id:a.session.customerId,reason:String(b.reason||'').slice(0,500),items:Array.isArray(b.items)?b.items.slice(0,50):[],status:'REQUESTED'}])});
-        return json(res,201,{ok:true,id,status:'REQUESTED'});
       }
       if (p === '/api/admin/returns' && req.method === 'GET') {
         if(!supabaseReady)return json(res,200,[]);

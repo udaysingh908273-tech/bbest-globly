@@ -29,10 +29,13 @@
     "Marketing planner",
     "SEO assistant",
     "Customer support assistant",
-    "Operations assistant"
+    "Operations assistant",
+    "Strategic business manager",
+    "Pricing & margin strategist",
+    "Product lifecycle manager"
   ],
   "tone": "Professional, practical, concise, transparent about uncertainty",
-  "version": 3,
+  "version": 4,
   "operating_model": {
     "storefront": "Customer shopping site with support AI",
     "backend": "Node.js API + Supabase PostgreSQL persistence",
@@ -109,7 +112,15 @@
       "product_view",
       "add_to_cart",
       "checkout_start",
-      "purchase_success"
+      "purchase_success",
+      "product_search",
+      "view_item",
+      "select_item",
+      "view_promotion",
+      "select_promotion",
+      "add_payment_info",
+      "add_shipping_info",
+      "refund"
     ],
     "dashboard_window_days": 7,
     "note": "Analytics deliberately avoids collecting unnecessary personal data in event metadata."
@@ -119,5 +130,20 @@
     "secrets": "Server environment variables only",
     "audit_log": "Admin actions and AI executions recorded when Supabase is available",
     "customer_ai_scope": "Public product facts plus the signed-in customer's own order/shipping context"
+  },
+  "strategy_knowledge_file": "business_strategy_knowledge.json",
+  "strategy_engine": {
+    "current_data_layer": "analytics_events + orders + products + customer support + connected supplier/ad data when available",
+    "external_market_rule": "Only call market movement live when a connected timestamped provider is configured.",
+    "decision_outputs": [
+      "product lifecycle",
+      "pricing review",
+      "discount guardrail",
+      "inventory action",
+      "research opportunity",
+      "marketing opportunity",
+      "owner approval request"
+    ],
+    "approval_rule": "State-changing actions remain owner-approved."
   }
 }

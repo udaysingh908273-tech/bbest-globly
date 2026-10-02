@@ -1035,23 +1035,6 @@ const server = http.createServer(async (req, res) => {
 
     /* ---------------- admin ---------------- */
     if (p === '/api/admin/forgot-password/request' && req.method === 'POST') {
-      const b=await readBody(req);
-      const email=String(b.email||'').trim().toLowerCase();
-      if(!/^\S+@\S+\.\S+$/.test(email)) return json(res,400,{error:'Valid recovery email is required'});
-      try{
-        if(gmailOtpReady && email===ADMIN_RECOVERY_EMAIL) await sendAdminOtp(email);
-        return json(res,200,{ok:true,message:'If this email is configured for recovery, an OTP has been sent.'});
-      }catch(e){return json(res,503,{error:e.message})}
-    }
-    if (p === '/api/admin/forgot-password/verify' && req.method === 'POST') {
-      const b=await readBody(req);
-      try{
-        await verifyAdminOtp(String(b.email||'').trim().toLowerCase(),String(b.otp||'').trim(),String(b.new_password||''));
-        return json(res,200,{ok:true,message:'Password reset successfully. You can now log in.'});
-      }catch(e){return json(res,400,{error:e.message})}
-    }
-
-    if (p === '/api/admin/forgot-password/request' && req.method === 'POST') {
       const b=await readBody(req), email=String(b.email||'').trim().toLowerCase();
       if(!/^\S+@\S+\.\S+$/.test(email)) return json(res,400,{error:'Enter a valid recovery email'});
       if(!otpAllowed('admin:'+email)) return json(res,429,{error:'Please wait before requesting another OTP'});
@@ -1153,6 +1136,18 @@ const server = http.createServer(async (req, res) => {
           if(local){local.supplier='Qikink';local.supplier_status='ERROR';local.supplier_error=e.message;local.updated_at=new Date().toISOString();saveOrders(latest)}
           return json(res,502,{error:e.message});
         }
+      }
+
+      if (p === '/api/admin/readiness' && req.method === 'GET') {
+        return json(res,200,{
+          ok:true,
+          persistence:{configured:supabaseReady},
+          ai:{configured:aiReady,liveResearchConfigured:!!(process.env.RESEARCH_API_URL&&process.env.RESEARCH_API_KEY)},
+          password_recovery:{configured:gmailOtpReady},
+          payments:{configured:paymentsReady,webhook_secret:!!RZP_WEBHOOK_SECRET},
+          shipping:{configured:!!(SHIPROCKET_EMAIL&&SHIPROCKET_PASSWORD&&SHIPROCKET_PICKUP_LOCATION),auto_fulfill:SHIPROCKET_AUTO_FULFILL},
+          supplier_qikink:{configured:qikinkReady,auto_fulfill:QIKINK_AUTO_FULFILL}
+        });
       }
 
       if (p === '/api/admin/products' && req.method === 'GET') return json(res, 200, loadCatalog());
@@ -1398,11 +1393,15 @@ const server = http.createServer(async (req, res) => {
 
 
     if (p === '/dashboard' || p === '/dashboard.html' || p === '/admin') {
+      res.setHeader('Cache-Control','no-store, no-cache, must-revalidate, max-age=0');
       return fs.readFile(path.join(ROOT, 'dashboard.html'), (err, data) => err ? json(res,404,{error:'dashboard not found'}) : send(res,200,data,MIME['.html']));
     }
 
     /* ---------------- static files ---------------- */
     const fp = p === '/' ? '/index.html' : p;
+    if (p === '/dashboard.js' || p === '/dashboard.css' || p === '/dashboard.html') {
+      res.setHeader('Cache-Control','no-store, no-cache, must-revalidate, max-age=0');
+    }
     const full = path.join(ROOT, path.normalize(fp));
     if (!full.startsWith(ROOT)) return json(res, 403, { error: 'forbidden' });
     fs.readFile(full, (err, data) => {

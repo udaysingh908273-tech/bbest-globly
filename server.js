@@ -68,6 +68,9 @@ function normalizeProductBody(b, idOverride) {
     supplier: String(body.supplier || '').trim().slice(0, 50) || null,
     supplier_sku: String(body.supplier_sku || '').trim().slice(0, 100) || null,
     supplier_cost_inr: Math.max(0, Number(body.supplier_cost_inr ?? 0)),
+    supplier_mode: String(body.supplier_mode || '').trim().slice(0, 80) || null,
+    supplier_url: String(body.supplier_url || '').trim().slice(0, 500) || null,
+    supplier_search_my_products: body.supplier_search_my_products !== false,
     stock: Math.max(0, Math.floor(Number(body.stock ?? 0))),
     weight_kg: Math.max(0.01, Number(body.weight_kg ?? 0.5)),
     length_cm: Math.max(1, Number(body.length_cm ?? 10)),
@@ -149,7 +152,7 @@ async function syncJsonFile(file, data) {
       id:x.id,name:x.name,category:x.category||'',tagline:x.tagline||'',
       price_inr:Number(x.price_inr||0),compare_at_inr:Number(x.compare_at_inr||0),
       img:x.img||'',badges:x.badges||[],demo:!!x.demo,description:x.description||'',
-      features:x.features||[],sku:x.sku||null,supplier:x.supplier||null,supplier_sku:x.supplier_sku||null,supplier_cost_inr:Number(x.supplier_cost_inr??0),stock:Number(x.stock??100),weight_kg:Number(x.weight_kg??0.5),length_cm:Number(x.length_cm??10),breadth_cm:Number(x.breadth_cm??10),height_cm:Number(x.height_cm??10),published:x.published!==false,updated_at:new Date().toISOString()
+      features:x.features||[],sku:x.sku||null,supplier:x.supplier||null,supplier_sku:x.supplier_sku||null,supplier_cost_inr:Number(x.supplier_cost_inr??0),supplier_mode:x.supplier_mode||null,supplier_url:x.supplier_url||null,supplier_search_my_products:x.supplier_search_my_products!==false,stock:Number(x.stock??100),weight_kg:Number(x.weight_kg??0.5),length_cm:Number(x.length_cm??10),breadth_cm:Number(x.breadth_cm??10),height_cm:Number(x.height_cm??10),published:x.published!==false,updated_at:new Date().toISOString()
     }));
     await supabaseRequest('products?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(rows)});
   } else if (file === 'orders.json') {
@@ -172,7 +175,7 @@ async function hydrateSupabase() {
     if(Array.isArray(products) && products.length) writeJSON('products.json',products.map(x=>({
       id:x.id,name:x.name,category:x.category,tagline:x.tagline,price_inr:Number(x.price_inr),
       compare_at_inr:Number(x.compare_at_inr||0),img:x.img,badges:x.badges||[],demo:!!x.demo,
-      description:x.description,features:x.features||[],sku:x.sku,supplier:x.supplier||null,supplier_sku:x.supplier_sku||null,supplier_cost_inr:Number(x.supplier_cost_inr??0),stock:Number(x.stock||0),published:x.published!==false
+      description:x.description,features:x.features||[],sku:x.sku,supplier:x.supplier||null,supplier_sku:x.supplier_sku||null,supplier_cost_inr:Number(x.supplier_cost_inr??0),supplier_mode:x.supplier_mode||null,supplier_url:x.supplier_url||null,supplier_search_my_products:x.supplier_search_my_products!==false,stock:Number(x.stock||0),published:x.published!==false
     })));
     const orders=await supabaseRequest('orders?select=*&order=created.asc');
     if(Array.isArray(orders)) writeJSON('orders.json',orders);
@@ -218,6 +221,121 @@ const QIKINK_SHIPPING = String(process.env.QIKINK_SHIPPING || '1') === '1';
 const QIKINK_AUTO_FULFILL = String(process.env.QIKINK_AUTO_FULFILL || 'false').toLowerCase() === 'true';
 const qikinkReady = !!QIKINK_AUTH_TOKEN;
 
+let qikinkCatalogCache = { expiresAt: 0, items: [] };
+
+function decodeBasicEntities(s) {
+  return String(s || '')
+    .replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&#39;/g,"'")
+    .replace(/&lt;/g,'<').replace(/&gt;/g,'>');
+}
+
+function collectJsonLdProducts(node, out, sourceUrl) {
+  if (!node) return;
+  if (Array.isArray(node)) { node.forEach(x => collectJsonLdProducts(x, out, sourceUrl)); return; }
+  if (typeof node !== 'object') return;
+  if (String(node['@type'] || '').toLowerCase() === 'product' && node.name) {
+    const offers = Array.isArray(node.offers) ? node.offers[0] : (node.offers || {});
+    const image = Array.isArray(node.image) ? node.image[0] : node.image;
+    out.push({
+      name:String(node.name).trim(),
+      sku:String(node.sku || '').trim() || null,
+      price_inr:Number(offers?.price || offers?.lowPrice || 0) || 0,
+      img:String(image || '').trim() || null,
+      url:String(node.url || sourceUrl || '').trim() || sourceUrl
+    });
+  }
+  if (node['@graph']) collectJsonLdProducts(node['@graph'], out, sourceUrl);
+}
+
+async function fetchQikinkPublicCatalog() {
+  if (qikinkCatalogCache.expiresAt > Date.now() && qikinkCatalogCache.items.length) return qikinkCatalogCache.items;
+  const urls = [
+    'https://qikink.com/custom/collections/',
+    'https://qikink.com/custom/collections/t-shirts/',
+    'https://qikink.com/custom/collections/hoodies/',
+    'https://qikink.com/custom/collections/drinkware/',
+    'https://qikink.com/custom/collections/bags/'
+  ];
+  const found = [];
+  for (const u of urls) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 12000);
+      const r = await fetch(u, { signal:controller.signal, headers:{'User-Agent':'BBest-Globly-AI/1.0'} });
+      const html = await r.text();
+      clearTimeout(timer);
+      if (!r.ok) continue;
+      const matches = html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+      for (const m of matches) {
+        try {
+          const raw = decodeBasicEntities(m[1]);
+          collectJsonLdProducts(JSON.parse(raw), found, u);
+        } catch {}
+      }
+    } catch {}
+  }
+  const unique = [];
+  const seen = new Set();
+  for (const p of found) {
+    const key = (p.sku || p.url || p.name).toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(p);
+  }
+  qikinkCatalogCache = { expiresAt:Date.now()+15*60*1000, items:unique.slice(0,300) };
+  return qikinkCatalogCache.items;
+}
+
+async function qikinkAIScout(command) {
+  const catalog = await fetchQikinkPublicCatalog();
+  if (!catalog.length) return {
+    configured:true,
+    reply:'I could not read the public Qikink catalog right now. No product will be fabricated. Try again later or use a Qikink-provided catalog export.',
+    actions:[]
+  };
+  const system = [
+    'You are BBest Globly AI Product Sourcing Manager.',
+    'Use ONLY the supplied real Qikink public catalog records for supplier facts.',
+    'Select 1 to 5 products that match the owner request.',
+    'Return JSON ONLY: {"reply":"string","candidates":[{"name":"string","category":"string","price_inr":0,"compare_at_inr":0,"img":"string","description":"string","features":[],"supplier":"Qikink","supplier_sku":"string","supplier_cost_inr":0,"supplier_mode":"qikink_public_catalog_base_sku","supplier_url":"string","supplier_search_my_products":false,"reason":"string"}]}',
+    'Do not invent SKUs, supplier costs or URLs. Use the catalog price as supplier_cost_inr.',
+    'Selling prices and copy are AI-generated recommendations and must be treated as draft until owner approval.',
+    'Do not claim that a public catalog SKU is the same as a My Products Store SKU.'
+  ].join(' ');
+  const raw = await callAI([
+    {role:'system',content:system},
+    {role:'user',content:JSON.stringify({command,catalog})}
+  ],{temperature:0.1});
+  const parsed = safeJson(raw);
+  if (!parsed) return {configured:true,reply:raw,actions:[]};
+  const candidates = Array.isArray(parsed.candidates) ? parsed.candidates.slice(0,5).filter(x => x && x.name && x.supplier_sku) : [];
+  const planned = candidates.map(x => ({
+    type:'add_product',
+    payload:{
+      name:String(x.name).slice(0,160), category:String(x.category||'POD').slice(0,80),
+      tagline:String(x.tagline||'').slice(0,180), price_inr:Number(x.price_inr||0),
+      compare_at_inr:Number(x.compare_at_inr||0), img:String(x.img||''),
+      badges:['AI Sourced'], description:String(x.description||'').slice(0,3000),
+      features:Array.isArray(x.features)?x.features.slice(0,20):[],
+      sku:null, supplier:'Qikink', supplier_sku:String(x.supplier_sku).slice(0,100),
+      supplier_cost_inr:Number(x.supplier_cost_inr||0),
+      supplier_mode:'qikink_public_catalog_base_sku',
+      supplier_url:String(x.supplier_url||'').slice(0,500),
+      supplier_search_my_products:false,
+      stock:0
+    },
+    reason:String(x.reason||'Selected from Qikink public catalog; owner approval required.'),
+    requiresApproval:true
+  }));
+  const stored = planned.length ? await createAgentApprovals(planned) : [];
+  return {
+    configured:true,
+    reply:String(parsed.reply||'Qikink sourcing draft ready.'),
+    actions:planned.map((a,i)=>({...a,approvalId:stored[i]?.id||null})),
+    catalog_count:catalog.length
+  };
+}
+
 async function qikinkCreateOrder(order) {
   if(!qikinkReady) throw new Error('Qikink is not configured. Add QIKINK_AUTH_TOKEN in Render.');
   if(order.supplier_order_id && order.supplier === 'Qikink') return {alreadyCreated:true,supplier_order_id:order.supplier_order_id};
@@ -227,7 +345,7 @@ async function qikinkCreateOrder(order) {
     const sku=p?.supplier_sku || p?.sku;
     if(!sku) throw new Error('Missing Qikink SKU for product: '+item.name);
     return {
-      search_from_my_products: true,
+      search_from_my_products: p?.supplier_search_my_products !== false,
       price: Number(item.price_inr||0),
       quantity: Number(item.qty||1),
       sku:String(sku)
@@ -449,7 +567,9 @@ function currentAIContext(extra={}) {
     site_config: loadSiteConfig(),
     products: loadCatalog().map(x=>({
       id:x.id,name:x.name,category:x.category,price_inr:x.price_inr,
-      compare_at_inr:x.compare_at_inr||0,stock:x.stock||0,tagline:x.tagline||'',description:x.description||''
+      compare_at_inr:x.compare_at_inr||0,stock:x.stock||0,tagline:x.tagline||'',description:x.description||'',
+      supplier:x.supplier||null,supplier_sku:x.supplier_sku||null,supplier_cost_inr:x.supplier_cost_inr||0,
+      supplier_mode:x.supplier_mode||null,supplier_url:x.supplier_url||null,supplier_search_my_products:x.supplier_search_my_products!==false
     })),
     orders: loadOrders().map(x=>({
       id:x.id,status:x.status,total_inr:x.totals?.total_inr||0,created:x.created,
@@ -474,6 +594,10 @@ async function askAI(message, context = {}, task = 'general') {
 }
 
 async function agentCommand(command) {
+  let qikink_catalog = [];
+  if (/qikink|supplier|dropship|fulfill|catalog/i.test(command)) {
+    try { qikink_catalog = await fetchQikinkPublicCatalog(); } catch {}
+  }
   const system = [
     'You are the BBest Globly Agentic Business Manager.',
     'Plan concrete business actions from the owner request using ONLY supplied store data and business knowledge.',
@@ -489,7 +613,7 @@ async function agentCommand(command) {
   ].join(' ');
   const raw=await callAI([
     {role:'system',content:system},
-    {role:'user',content:JSON.stringify({command,context:currentAIContext()})}
+    {role:'user',content:JSON.stringify({command,context:currentAIContext({qikink_catalog})})}
   ],{temperature:0.1});
   const parsed=safeJson(raw);
   if(!parsed) {
@@ -568,7 +692,7 @@ const server = http.createServer(async (req, res) => {
             catalog=remote.map(x=>({
               id:x.id,name:x.name,category:x.category,tagline:x.tagline,price_inr:Number(x.price_inr||0),
               compare_at_inr:Number(x.compare_at_inr||0),img:x.img,badges:x.badges||[],demo:!!x.demo,
-              description:x.description,features:x.features||[],sku:x.sku,stock:Number(x.stock??0),
+              description:x.description,features:x.features||[],sku:x.sku,supplier:x.supplier||null,supplier_sku:x.supplier_sku||null,supplier_cost_inr:Number(x.supplier_cost_inr??0),supplier_mode:x.supplier_mode||null,supplier_url:x.supplier_url||null,supplier_search_my_products:x.supplier_search_my_products!==false,stock:Number(x.stock??0),
               weight_kg:Number(x.weight_kg??0.5),length_cm:Number(x.length_cm??10),breadth_cm:Number(x.breadth_cm??10),
               height_cm:Number(x.height_cm??10),published:x.published!==false
             }));
@@ -758,6 +882,20 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith('/api/admin/')) {
       const a = getAuth(req);
       if (!a || a.session.admin !== true) return json(res, 401, { error: 'admin access required' });
+
+      if (p === '/api/admin/suppliers/qikink/catalog' && req.method === 'GET') {
+        try {
+          const catalog=await fetchQikinkPublicCatalog();
+          return json(res,200,{ok:true,count:catalog.length,items:catalog});
+        } catch(e) { return json(res,502,{error:e.message}); }
+      }
+
+      if (p === '/api/admin/suppliers/qikink/ai-scout' && req.method === 'POST') {
+        const b=await readBody(req);
+        const command=String(b.command||'Find suitable Qikink products for BBest Globly').trim();
+        try{return json(res,200,await qikinkAIScout(command))}
+        catch(e){return json(res,502,{error:e.message})}
+      }
 
       if (p === '/api/admin/suppliers/qikink/status' && req.method === 'GET') {
         return json(res,200,{configured:qikinkReady,shipping:QIKINK_SHIPPING,autoFulfill:QIKINK_AUTO_FULFILL,note:'Qikink order forwarding requires a supplier SKU on each product. Product catalogue import is not assumed from the order API.'});

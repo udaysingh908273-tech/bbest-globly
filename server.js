@@ -175,6 +175,7 @@ function agentControlForAction(type){
   if(t==='update_product') return 'pricing';
   if(t==='delete_product') return 'catalog';
   if(t==='set_site_config') return 'catalog';
+  if(t==='create_offer') return 'offers';
   return 'global';
 }
 async function assertAgentActionAllowed(type){
@@ -193,6 +194,19 @@ async function auditAdmin(actor,action,targetType,targetId,details={}){
       body:JSON.stringify({actor:String(actor||'admin'),action,target_type:targetType||null,target_id:targetId||null,details})
     });
   }catch(e){console.error('[audit]',e.message)}
+}
+function productGrossMarginPct(product, price){
+  const p=Number(price||0), cost=Number(product?.supplier_cost_inr||0);
+  if(p<=0 || cost<=0)return null;
+  return ((p-cost)/p)*100;
+}
+function validateOfferPayload(payload,control){
+  const discountType=String(payload.discount_type||'PERCENT').toUpperCase();
+  if(discountType!=='PERCENT')throw new Error('Only percentage offers are currently supported.');
+  const d=Number(payload.discount_value||0);
+  if(d<0||d>100)throw new Error('Discount must be between 0 and 100%.');
+  if(d>Number(control.max_discount_pct||0))throw new Error('Discount exceeds the Offers Agent limit.');
+  return {discount_type:'PERCENT',discount_value:d};
 }
 function safeAnalyticsMetadata(input){
   const allowed={};
@@ -875,7 +889,7 @@ async function agentCommand(command) {
     'Plan concrete business actions from the owner request using ONLY supplied store data and business knowledge.',
     'Never fabricate live market data, supplier facts, sales, stock, ad performance, customer facts or delivery promises.',
     'Return JSON ONLY with this exact shape:',
-    '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status","payload":{},"reason":"string","requiresApproval":true}]}',
+    '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status|create_offer","payload":{},"reason":"string","requiresApproval":true}]}',
     'Every state-changing action returned must have requiresApproval=true. Never bypass the approval workflow.',
     'Respect the configured minimum margin, maximum discount and refund limits supplied in agent controls when making recommendations.',
     'For add_product, payload may include name, category, tagline, price_inr, compare_at_inr, img, badges, description, features, sku, supplier, supplier_sku, supplier_cost_inr, stock.',
@@ -883,6 +897,7 @@ async function agentCommand(command) {
     'For delete_product, payload must include id.',
     'For set_site_config, payload may include hero and theme fields only.',
     'For set_order_status, payload must include id and status.',
+    'For create_offer, payload may include id, code, name, discount_type, discount_value, min_order_inr, max_uses, starts_at, ends_at, active.',
     'Clearly separate REAL DATA, AI ANALYSIS, AI RECOMMENDATION and NEEDS OWNER APPROVAL.'
   ].join(' ');
   const raw=await callAI([
@@ -1340,6 +1355,39 @@ const server = http.createServer(async (req, res) => {
         return json(res,200,{ok:true,id,...patch});
       }
 
+      if (p === '/api/admin/offers' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,[]);
+        const rows=await supabaseRequest('offers?select=*&order=updated_at.desc&limit=100');
+        return json(res,200,Array.isArray(rows)?rows:[]);
+      }
+      if (p === '/api/admin/offers' && req.method === 'POST') {
+        const b=await readBody(req),id=String(b.id||('OFF-'+Date.now().toString(36).toUpperCase())).slice(0,50);
+        const control=await getAgentControl('offers');
+        try{
+          const validated=validateOfferPayload(b,control);
+          const row={id,name:String(b.name||'Offer').slice(0,120),code:String(b.code||'').trim().toUpperCase().slice(0,40)||null,...validated,min_order_inr:Math.max(0,Number(b.min_order_inr||0)),max_uses:b.max_uses==null?null:Math.max(1,Math.floor(Number(b.max_uses))),starts_at:b.starts_at?new Date(b.starts_at).toISOString():null,ends_at:b.ends_at?new Date(b.ends_at).toISOString():null,active:b.active===true,updated_at:new Date().toISOString()};
+          if(!supabaseReady)return json(res,503,{error:'Supabase is required for offer persistence'});
+          await supabaseRequest('offers?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])});
+          await auditAdmin('admin','CREATE_OFFER','offer',id,{code:row.code,discount_value:row.discount_value});
+          return json(res,201,{ok:true,offer:row});
+        }catch(e){return json(res,400,{error:e.message})}
+      }
+      if (p.startsWith('/api/admin/offers/') && req.method === 'PATCH') {
+        const id=decodeURIComponent(p.slice('/api/admin/offers/'.length)),b=await readBody(req),control=await getAgentControl('offers');
+        if(!supabaseReady)return json(res,503,{error:'Supabase is required for offer persistence'});
+        try{
+          const patch={};
+          if(b.name!==undefined)patch.name=String(b.name).slice(0,120);
+          if(b.code!==undefined)patch.code=String(b.code||'').trim().toUpperCase().slice(0,40)||null;
+          if(b.discount_value!==undefined||b.discount_type!==undefined)Object.assign(patch,validateOfferPayload({...b,discount_value:b.discount_value,discount_type:b.discount_type||'PERCENT'},control));
+          for(const k of ['min_order_inr','max_uses','starts_at','ends_at','active'] ) if(b[k]!==undefined)patch[k]=k==='active'?b[k]===true:k==='max_uses'?(b[k]==null?null:Math.max(1,Math.floor(Number(b[k])))):k.endsWith('_at')?(b[k]?new Date(b[k]).toISOString():null):Math.max(0,Number(b[k]||0));
+          patch.updated_at=new Date().toISOString();
+          await supabaseRequest('offers?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify(patch)});
+          await auditAdmin('admin','UPDATE_OFFER','offer',id,patch);
+          return json(res,200,{ok:true,id,...patch});
+        }catch(e){return json(res,400,{error:e.message})}
+      }
+
       if (p === '/api/admin/finance/summary' && req.method === 'GET') {
         return json(res,200,await buildFinanceSummary());
       }
@@ -1494,6 +1542,25 @@ const server = http.createServer(async (req, res) => {
             }
             if(payload.theme && typeof payload.theme==='object' && payload.theme.accent) next.theme={...cfg.theme,accent:String(payload.theme.accent).slice(0,30)};
             writeJSON('site_config.json',next); result={ok:true,action:type,site_config:next};
+          } else if(type==='create_offer'){
+            const control=await getAgentControl('offers');
+            const id=String(payload.id||('OFF-'+Date.now().toString(36).toUpperCase())).slice(0,50);
+            const name=String(payload.name||'AI Offer Draft').trim().slice(0,120);
+            const code=String(payload.code||'').trim().toUpperCase().slice(0,40)||null;
+            const validated=validateOfferPayload(payload,control);
+            const row={
+              id,name,code,
+              discount_type:validated.discount_type,discount_value:validated.discount_value,
+              min_order_inr:Math.max(0,Number(payload.min_order_inr||0)),
+              max_uses:payload.max_uses==null?null:Math.max(1,Math.floor(Number(payload.max_uses))),
+              starts_at:payload.starts_at?new Date(payload.starts_at).toISOString():null,
+              ends_at:payload.ends_at?new Date(payload.ends_at).toISOString():null,
+              active:payload.active===true,updated_at:new Date().toISOString()
+            };
+            if(!supabaseReady)return json(res,503,{error:'Supabase is required for offer persistence'});
+            await supabaseRequest('offers?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])});
+            await auditAdmin('admin','CREATE_OFFER','offer',id,{code,name,discount_value:row.discount_value});
+            result={ok:true,action:type,offer:row};
           } else if(type==='set_order_status'){
             const allowed=['PENDING','CONFIRMED','SHIPPED','DELIVERED','CANCELLED'];
             if(!payload.id || !allowed.includes(payload.status)) return json(res,400,{error:'invalid order action'});

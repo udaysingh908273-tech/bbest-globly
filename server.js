@@ -7,6 +7,12 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+let nodemailer = null;
+try { nodemailer = require('nodemailer'); } catch {}
+const GMAIL_SMTP_USER = process.env.GMAIL_SMTP_USER || '';
+const GMAIL_SMTP_APP_PASSWORD = process.env.GMAIL_SMTP_APP_PASSWORD || '';
+const ADMIN_RECOVERY_EMAIL = (process.env.ADMIN_RECOVERY_EMAIL || GMAIL_SMTP_USER).trim().toLowerCase();
+const gmailOtpReady = !!(nodemailer && GMAIL_SMTP_USER && GMAIL_SMTP_APP_PASSWORD && ADMIN_RECOVERY_EMAIL);
 
 const ROOT = __dirname;
 const PORT = process.env.PORT || 3000;
@@ -218,6 +224,52 @@ async function resetAdminPassword(newPassword) {
     method:'POST',
     headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},
     body:JSON.stringify([{id:'default',password_hash:hash,salt,updated_at:new Date().toISOString()}])
+  });
+}
+async function sendAdminOtp(email){
+  if(!gmailOtpReady) throw new Error('Gmail OTP is not configured. Add GMAIL_SMTP_USER, GMAIL_SMTP_APP_PASSWORD and ADMIN_RECOVERY_EMAIL in Render.');
+  const otp=String(crypto.randomInt(100000,1000000));
+  const salt=newSalt(), hash=hashPw(otp,salt), id='OTP-'+crypto.randomBytes(8).toString('hex');
+  const transporter=nodemailer.createTransport({
+    host:'smtp.gmail.com',port:465,secure:true,
+    auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}
+  });
+  await transporter.sendMail({
+    from:GMAIL_SMTP_USER,
+    to:email,
+    subject:'BBest Globly Admin Password Reset OTP',
+    text:'Your BBest Globly admin password reset OTP is '+otp+'. It expires in 10 minutes.',
+    html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>Your admin password reset OTP is:</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This OTP expires in 10 minutes.</p></div>'
+  });
+  await supabaseRequest('admin_password_otps',{
+    method:'POST',
+    headers:{'Prefer':'return=minimal'},
+    body:JSON.stringify([{id,email,otp_hash:hash,otp_salt:salt,attempts:0,used:false,expires_at:new Date(Date.now()+10*60*1000).toISOString()}])
+  });
+}
+async function verifyAdminOtp(email,otp,newPassword){
+  if(!gmailOtpReady) throw new Error('Gmail OTP is not configured');
+  if(!supabaseReady) throw new Error('Supabase persistence is required for OTP recovery');
+  if(newPassword.length<10) throw new Error('New password must be at least 10 characters');
+  const rows=await supabaseRequest('admin_password_otps?select=*&email=eq.'+encodeURIComponent(email)+'&used=eq.false&order=created_at.desc&limit=1');
+  const row=Array.isArray(rows)?rows[0]:null;
+  if(!row) throw new Error('OTP not found. Request a new OTP.');
+  if(new Date(row.expires_at).getTime()<Date.now()) throw new Error('OTP expired. Request a new OTP.');
+  if(Number(row.attempts||0)>=5) throw new Error('Too many incorrect attempts. Request a new OTP.');
+  const expected=hashPw(String(otp||''),row.otp_salt);
+  const a=Buffer.from(expected), b=Buffer.from(row.otp_hash);
+  const ok=a.length===b.length && crypto.timingSafeEqual(a,b);
+  if(!ok){
+    await supabaseRequest('admin_password_otps?id=eq.'+encodeURIComponent(row.id),{
+      method:'PATCH',headers:{'Prefer':'return=minimal'},
+      body:JSON.stringify({attempts:Number(row.attempts||0)+1})
+    });
+    throw new Error('Incorrect OTP');
+  }
+  await resetAdminPassword(newPassword);
+  await supabaseRequest('admin_password_otps?id=eq.'+encodeURIComponent(row.id),{
+    method:'PATCH',headers:{'Prefer':'return=minimal'},
+    body:JSON.stringify({used:true})
   });
 }
 
@@ -931,6 +983,23 @@ const server = http.createServer(async (req, res) => {
     }
 
     /* ---------------- admin ---------------- */
+    if (p === '/api/admin/forgot-password/request' && req.method === 'POST') {
+      const b=await readBody(req);
+      const email=String(b.email||'').trim().toLowerCase();
+      if(!/^\S+@\S+\.\S+$/.test(email)) return json(res,400,{error:'Valid recovery email is required'});
+      try{
+        if(gmailOtpReady && email===ADMIN_RECOVERY_EMAIL) await sendAdminOtp(email);
+        return json(res,200,{ok:true,message:'If this email is configured for recovery, an OTP has been sent.'});
+      }catch(e){return json(res,503,{error:e.message})}
+    }
+    if (p === '/api/admin/forgot-password/verify' && req.method === 'POST') {
+      const b=await readBody(req);
+      try{
+        await verifyAdminOtp(String(b.email||'').trim().toLowerCase(),String(b.otp||'').trim(),String(b.new_password||''));
+        return json(res,200,{ok:true,message:'Password reset successfully. You can now log in.'});
+      }catch(e){return json(res,400,{error:e.message})}
+    }
+
     if (p === '/api/admin/forgot-password' && req.method === 'POST') {
       const b=await readBody(req);
       const recoveryKey=String(b.recovery_key||'');

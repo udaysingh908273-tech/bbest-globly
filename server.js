@@ -985,6 +985,15 @@ const server = http.createServer(async (req, res) => {
           id:x.id,status:x.status,total_inr:x.totals?.total_inr,created:x.created,
           items:x.items?.map(i=>({id:i.id,name:i.name,qty:i.qty}))
         }));
+      } else if (a && a.session.customerId) {
+        const customer=readJSON('customers.json',[]).find(x=>x.id===a.session.customerId);
+        if(customer){
+          context.orders = loadOrders().filter(x=>x.customer_id===customer.id || (x.customer?.email && x.customer.email.toLowerCase()===customer.email))
+            .map(x=>({id:x.id,status:x.status,total_inr:x.totals?.total_inr,created:x.created,
+              shiprocket_awb:x.shiprocket_awb||null,shipping_status:x.shipping_status||null,
+              items:x.items?.map(i=>({id:i.id,name:i.name,qty:i.qty}))
+            })).reverse();
+        }
       }
       try {
         const result = await askAI(String(b.message||''), context, String(b.task||'general'));

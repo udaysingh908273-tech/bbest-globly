@@ -65,6 +65,9 @@ function normalizeProductBody(b, idOverride) {
     description: String(body.description || '').trim().slice(0, 3000),
     features,
     sku: String(body.sku || '').trim().slice(0, 80) || null,
+    supplier: String(body.supplier || '').trim().slice(0, 50) || null,
+    supplier_sku: String(body.supplier_sku || '').trim().slice(0, 100) || null,
+    supplier_cost_inr: Math.max(0, Number(body.supplier_cost_inr ?? 0)),
     stock: Math.max(0, Math.floor(Number(body.stock ?? 0))),
     weight_kg: Math.max(0.01, Number(body.weight_kg ?? 0.5)),
     length_cm: Math.max(1, Number(body.length_cm ?? 10)),
@@ -146,7 +149,7 @@ async function syncJsonFile(file, data) {
       id:x.id,name:x.name,category:x.category||'',tagline:x.tagline||'',
       price_inr:Number(x.price_inr||0),compare_at_inr:Number(x.compare_at_inr||0),
       img:x.img||'',badges:x.badges||[],demo:!!x.demo,description:x.description||'',
-      features:x.features||[],sku:x.sku||null,stock:Number(x.stock??100),weight_kg:Number(x.weight_kg??0.5),length_cm:Number(x.length_cm??10),breadth_cm:Number(x.breadth_cm??10),height_cm:Number(x.height_cm??10),published:x.published!==false,updated_at:new Date().toISOString()
+      features:x.features||[],sku:x.sku||null,supplier:x.supplier||null,supplier_sku:x.supplier_sku||null,supplier_cost_inr:Number(x.supplier_cost_inr??0),stock:Number(x.stock??100),weight_kg:Number(x.weight_kg??0.5),length_cm:Number(x.length_cm??10),breadth_cm:Number(x.breadth_cm??10),height_cm:Number(x.height_cm??10),published:x.published!==false,updated_at:new Date().toISOString()
     }));
     await supabaseRequest('products?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates'},body:JSON.stringify(rows)});
   } else if (file === 'orders.json') {
@@ -169,7 +172,7 @@ async function hydrateSupabase() {
     if(Array.isArray(products) && products.length) writeJSON('products.json',products.map(x=>({
       id:x.id,name:x.name,category:x.category,tagline:x.tagline,price_inr:Number(x.price_inr),
       compare_at_inr:Number(x.compare_at_inr||0),img:x.img,badges:x.badges||[],demo:!!x.demo,
-      description:x.description,features:x.features||[],sku:x.sku,stock:Number(x.stock||0),published:x.published!==false
+      description:x.description,features:x.features||[],sku:x.sku,supplier:x.supplier||null,supplier_sku:x.supplier_sku||null,supplier_cost_inr:Number(x.supplier_cost_inr??0),stock:Number(x.stock||0),published:x.published!==false
     })));
     const orders=await supabaseRequest('orders?select=*&order=created.asc');
     if(Array.isArray(orders)) writeJSON('orders.json',orders);
@@ -478,7 +481,7 @@ async function agentCommand(command) {
     '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status","payload":{},"reason":"string","requiresApproval":true}]}',
     'Never fabricate missing product facts. Ask for missing essential details in reply and return no action when needed.',
     'Every action returned must have requiresApproval=true.',
-    'For add_product, payload may include name, category, tagline, price_inr, compare_at_inr, img, badges, description, features, sku, stock.',
+    'For add_product, payload may include name, category, tagline, price_inr, compare_at_inr, img, badges, description, features, sku, supplier, supplier_sku, supplier_cost_inr, stock.',
     'For update_product, payload must include id plus fields to update.',
     'For delete_product, payload must include id.',
     'For set_site_config, payload may include hero and theme fields only.',
@@ -1034,5 +1037,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 hydrateSupabase().finally(() => {
-  server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v2.6 listening on http://0.0.0.0:' + PORT));
+  server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v2.7 listening on http://0.0.0.0:' + PORT));
 });

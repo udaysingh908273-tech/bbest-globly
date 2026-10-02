@@ -175,7 +175,7 @@ function agentControlForAction(type){
   if(t==='update_product') return 'pricing';
   if(t==='delete_product') return 'catalog';
   if(t==='set_site_config') return 'catalog';
-  if(t==='create_offer') return 'offers';
+  if(t==='create_offer'||t==='create_customer_offer') return 'offers';
   return 'global';
 }
 async function assertAgentActionAllowed(type){
@@ -597,6 +597,20 @@ async function notifyCustomer(customer,message){
     }catch(e){results.push({channel:'email',ok:false,error:e.message})}
   }
   return results;
+}
+async function sendMarketingOffer(customer,offer){
+  if(!customer?.marketing_opt_in)return {skipped:true,reason:'customer marketing opt-in is false'};
+  const productText=offer.product_name?' for '+offer.product_name:'';
+  const message='BBest Globly offer'+productText+': use code '+String(offer.code||'')+' for '+String(offer.discount_value||0)+'% off. This offer is personalized based on your recent store activity.';
+  const results=[];
+  if(customer?.phone&&WHATSAPP_TOKEN)try{results.push({channel:'whatsapp',ok:true,response:await sendWhatsAppText(customer.phone,message)})}catch(e){results.push({channel:'whatsapp',ok:false,error:e.message})}
+  if(customer?.phone&&TWILIO_ACCOUNT_SID)try{results.push({channel:'sms',ok:true,response:await sendSmsText(customer.phone,message)})}catch(e){results.push({channel:'sms',ok:false,error:e.message})}
+  if(customer?.email&&gmailOtpReady)try{
+    const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
+    await transporter.sendMail({from:GMAIL_SMTP_USER,to:String(customer.email),subject:'A personalized BBest Globly offer',text:message});
+    results.push({channel:'email',ok:true});
+  }catch(e){results.push({channel:'email',ok:false,error:e.message})}
+  return {skipped:false,results};
 }
 async function notifyOrderStatus(order,status){
   if(!order?.customer)return {results:[]};
@@ -1079,7 +1093,7 @@ async function agentCommand(command) {
     'For delete_product, payload must include id.',
     'For set_site_config, payload may include hero and theme fields only.',
     'For set_order_status, payload must include id and status.',
-    'For create_offer, payload may include id, code, name, discount_type, discount_value, min_order_inr, max_uses, starts_at, ends_at, active.',
+    'For create_offer, payload may include id, code, name, discount_type, discount_value, min_order_inr, max_uses, starts_at, ends_at, active. For create_customer_offer, payload must include customer_id and product_id when the offer is product-specific, plus name, discount_type and discount_value.',
     'Clearly separate REAL DATA, AI ANALYSIS, AI RECOMMENDATION and NEEDS OWNER APPROVAL.'
   ].join(' ');
   const raw=await callAI([
@@ -1302,8 +1316,22 @@ const server = http.createServer(async (req, res) => {
         items.push({ id: prod.id, name: prod.name, price_inr: prod.price_inr, qty, line_inr: prod.price_inr * qty });
       }
       const subtotal = items.reduce((s, i) => s + i.line_inr, 0);
-      const id = 'BG-' + Date.now().toString(36).toUpperCase() + '-' + (100 + Math.floor(Math.random() * 900));
       const auth = getAuth(req);
+      let discount_inr=0, applied_offer=null;
+      if(b.discount_code){
+        if(!auth?.session?.customerId)return json(res,403,{error:'Login is required to use a personalized offer'});
+        if(!supabaseReady)return json(res,503,{error:'Supabase required for offer validation'});
+        const offerRows=await supabaseRequest('offers?select=*&code=eq.'+encodeURIComponent(String(b.discount_code).trim().toUpperCase())+'&active=eq.true&limit=1');
+        const offer=Array.isArray(offerRows)?offerRows[0]:null;
+        if(!offer)return json(res,400,{error:'Invalid or expired offer code'});
+        if(offer.customer_id&&offer.customer_id!==auth.session.customerId)return json(res,403,{error:'This offer is not assigned to this account'});
+        const now=Date.now();if(offer.starts_at&&new Date(offer.starts_at).getTime()>now)return json(res,400,{error:'Offer is not active yet'});if(offer.ends_at&&new Date(offer.ends_at).getTime()<now)return json(res,400,{error:'Offer has expired'});if(offer.used_at)return json(res,400,{error:'Offer has already been used'});if(subtotal<Number(offer.min_order_inr||0))return json(res,400,{error:'Minimum order for this offer is ₹'+Number(offer.min_order_inr).toLocaleString('en-IN')});
+        let eligibleSubtotal=subtotal;
+        if(offer.product_id){eligibleSubtotal=items.filter(x=>x.id===offer.product_id).reduce((n,x)=>n+x.line_inr,0);if(!eligibleSubtotal)return json(res,400,{error:'Offer applies to a different product'})}
+        discount_inr=Math.min(eligibleSubtotal,Math.round(eligibleSubtotal*Number(offer.discount_value||0)/100));
+        applied_offer={id:offer.id,code:offer.code,discount_value:Number(offer.discount_value||0),discount_inr};
+      }
+      const id = 'BG-' + Date.now().toString(36).toUpperCase() + '-' + (100 + Math.floor(Math.random() * 900));
       const order = {
         id, created: new Date().toISOString(), status: 'PENDING',
         customer_id: auth && auth.session.customerId ? auth.session.customerId : undefined,
@@ -1317,9 +1345,10 @@ const server = http.createServer(async (req, res) => {
           state: String(b.state).trim().slice(0, 60), pincode: String(b.pincode).trim().slice(0, 12),
           country: String(b.country || 'India').trim().slice(0, 40)
         },
-        items, totals: { subtotal_inr: subtotal, shipping_inr: 0, total_inr: subtotal }
+        items, totals: { subtotal_inr: subtotal, discount_inr:discount_inr, total_inr: Math.max(0,subtotal-discount_inr), applied_offer:applied_offer }
       };
       const orders = loadOrders(); orders.push(order); saveOrders(orders);
+      if(applied_offer&&supabaseReady){try{await supabaseRequest('offers?id=eq.'+encodeURIComponent(applied_offer.id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify({used_at:new Date().toISOString()})})}catch(e){console.error('[offer use]',e.message)}}
       let supplierRouting=null;
       if(supabaseReady){
         try{supplierRouting=await routeOrderToSupplier(id,false)}catch(e){supplierRouting={status:'NO_MAPPED_SUPPLIER',message:e.message}}
@@ -1983,6 +2012,23 @@ const server = http.createServer(async (req, res) => {
             }
             if(payload.theme && typeof payload.theme==='object' && payload.theme.accent) next.theme={...cfg.theme,accent:String(payload.theme.accent).slice(0,30)};
             writeJSON('site_config.json',next); result={ok:true,action:type,site_config:next};
+          } else if(type==='create_customer_offer'){
+            const control=await getAgentControl('offers');
+            if(!supabaseReady)return json(res,503,{error:'Supabase is required for personalized offers'});
+            const customerId=String(payload.customer_id||'').trim(),productId=String(payload.product_id||'').trim();
+            const customer=readJSON('customers.json',[]).find(x=>x.id===customerId);
+            if(!customer)return json(res,404,{error:'customer not found'});
+            if(customer.marketing_opt_in!==true)return json(res,403,{error:'Customer has not opted in to personalized marketing'});
+            const product=productId?loadCatalog().find(x=>x.id===productId):null;
+            if(productId&&!product)return json(res,404,{error:'product not found'});
+            const validated=validateOfferPayload(payload,control);
+            const code=('BG'+crypto.randomBytes(5).toString('hex').toUpperCase()).slice(0,16);
+            const id='OFC-'+Date.now().toString(36).toUpperCase()+'-'+crypto.randomBytes(3).toString('hex').toUpperCase();
+            const row={id,code,name:String(payload.name||'Personalized BBest Globly Offer').slice(0,120),discount_type:'PERCENT',discount_value:validated.discount_value,min_order_inr:Math.max(0,Number(payload.min_order_inr||0)),max_uses:1,starts_at:new Date().toISOString(),ends_at:payload.ends_at?new Date(payload.ends_at).toISOString():new Date(Date.now()+7*86400000).toISOString(),active:true,customer_id:customerId,product_id:productId||null,channel:'personalized',used_at:null,updated_at:new Date().toISOString()};
+            await supabaseRequest('offers?on_conflict=id',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([row])});
+            const sendResult=await sendMarketingOffer(customer,{...row,product_name:product?.name||null});
+            await auditAdmin('admin','SEND_PERSONALIZED_OFFER','customer',customerId,{offer_id:id,product_id:productId||null,send_result:sendResult});
+            result={ok:true,action:type,offer:row,send_result:sendResult};
           } else if(type==='create_offer'){
             const control=await getAgentControl('offers');
             const id=String(payload.id||('OFF-'+Date.now().toString(36).toUpperCase())).slice(0,50);
@@ -2061,6 +2107,21 @@ const server = http.createServer(async (req, res) => {
           customers: readJSON('customers.json', []).length
         });
       }
+      if (p === '/api/admin/marketing/personalized-plan' && req.method === 'POST') {
+        const b=await readBody(req),customerId=String(b.customer_id||'').trim(),productId=String(b.product_id||'').trim();
+        if(!customerId||!productId)return json(res,400,{error:'customer_id and product_id are required'});
+        const intel=await buildCustomerMarketingIntelligence(30);
+        const candidate=(intel.customers||[]).find(x=>x.customer_id===customerId);
+        if(!candidate)return json(res,404,{error:'Customer intent profile not found'});
+        if(candidate.marketing_opt_in!==true)return json(res,403,{error:'Customer has not opted in to personalized marketing'});
+        const product=loadCatalog().find(x=>x.id===productId);if(!product)return json(res,404,{error:'product not found'});
+        const control=await getAgentControl('offers');
+        const requested=Math.max(0,Math.min(Number(control.max_discount_pct||10),Number(b.discount_pct||5)));
+        const action={type:'create_customer_offer',payload:{customer_id:customerId,product_id:productId,name:'Personalized '+product.name+' offer',discount_type:'PERCENT',discount_value:requested},reason:'Customer showed recent intent for this product and has opted in to personalized marketing. Owner approval is required before sending.',requiresApproval:true};
+        const stored=await createAgentApprovals([action]);
+        return json(res,201,{ok:true,action:{...action,approvalId:stored[0]?.id||null},customer:candidate,product:{id:product.id,name:product.name}});
+      }
+
       if (p === '/api/admin/customer-intelligence' && req.method === 'GET') {
         try{return json(res,200,await buildCustomerMarketingIntelligence(30))}catch(e){return json(res,502,{error:e.message})}
       }

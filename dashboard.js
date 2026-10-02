@@ -221,20 +221,30 @@ async function customerView(){
 }
 async function financeView(){
   const box=$("#finance");
-  box.innerHTML='<div class="section-card"><div class="section-head"><div><h2>Finance & Profit</h2><div class="muted">Contribution estimate from your recorded order and supplier-cost data.</div></div><button class="btn soft" id="refreshFinance">Refresh</button></div><div id="financeStats" class="grid stats"><div class="notice">Loading…</div></div><div id="financeNote" class="notice" style="margin-top:14px"></div><div id="supplierCostBreakdown" class="table-wrap" style="margin-top:14px"></div></div>';
+  box.innerHTML='<div class="section-card"><div class="section-head"><div><h2>Finance, GST & Reconciliation</h2><div class="muted">Recorded sales, refunds, advertising, expenses and GST estimate.</div></div><button class="btn soft" id="refreshFinance">Refresh</button></div><div id="financeStats" class="grid stats"><div class="notice">Loading…</div></div><div id="financeNote" class="notice" style="margin-top:14px"></div></div><div class="section-card"><div class="section-head"><h2>Supplier cost breakdown</h2></div><div id="supplierCostBreakdown" class="table-wrap"></div></div><div class="section-card"><div class="section-head"><h2>Returns & refunds</h2><button class="btn soft" id="refreshReturns">Refresh</button></div><div id="returnsList">Loading…</div></div><div class="section-card"><div class="section-head"><h2>Advertising attribution</h2><button class="btn soft" id="refreshAds">Refresh</button></div><div id="adsStats" class="grid stats">Loading…</div><div class="actions" style="margin-top:12px"><button class="btn soft" id="importAds">Import ad spend</button></div></div><div class="section-card"><h2>Add financial expense</h2><div class="form-grid"><div><label>Category</label><input id="finCat" value="Other"></div><div><label>Amount ₹</label><input id="finAmt" type="number" min="0"></div><div><label>GST rate %</label><input id="finGst" type="number" min="0" max="100" value="0"></div><div><label>Date</label><input id="finDate" type="date"></div></div><textarea id="finNotes" class="command" placeholder="Notes / reference"></textarea><button class="btn primary" id="addFin">Save expense</button></div>';
   async function load(){
     try{
-      const d=await api("/api/admin/finance/summary");
-      $("#financeStats").innerHTML=[
-        ["Sales",money(d.sales_inr)],["Collected",money(d.collected_inr)],["Supplier cost",money(d.supplier_cost_inr)],
-        ["Estimated gross profit",money(d.estimated_gross_profit_inr)],["Gross margin",d.estimated_gross_margin_pct==null?"—":Number(d.estimated_gross_margin_pct).toFixed(1)+"%"],["Units sold",d.units_sold]
-      ].map(x=>'<div class="stat"><div class="label">'+esc(x[0])+'</div><div class="value" style="font-size:1.25rem">'+esc(String(x[1]))+'</div></div>').join('');
+      const d=await api("/api/admin/finance/reconciliation?days=30");
+      $("#financeStats").innerHTML=[["Sales",money(d.sales_inr)],["Refunds",money(d.refunds_inr)],["Ad spend",money(d.ad_spend_inr)],["Other expenses",money(d.expenses_inr)],["GST estimate",money(d.gst_output_inr)],["Net before tax",money(d.net_before_tax_inr)]].map(x=>'<div class="stat"><div class="label">'+esc(x[0])+'</div><div class="value" style="font-size:1.2rem">'+esc(String(x[1]))+'</div></div>').join('');
       $("#financeNote").textContent=d.note||'';
-      const b=d.supplier_cost_breakdown||{},entries=Object.entries(b).sort((a,b)=>b[1]-a[1]);
-      $("#supplierCostBreakdown").innerHTML=entries.length?'<h3 style="margin:0 0 8px">Supplier cost breakdown</h3><table class="tbl"><thead><tr><th>Supplier</th><th>Recorded cost</th></tr></thead><tbody>'+entries.map(x=>'<tr><td>'+esc(x[0])+'</td><td>'+money(x[1])+'</td></tr>').join('')+'</tbody></table>':'<div class="notice">No supplier cost data is recorded in orders yet.</div>';
+      const base=await api("/api/admin/finance/summary"),b=base.supplier_cost_breakdown||{},entries=Object.entries(b).sort((a,b)=>b[1]-a[1]);
+      $("#supplierCostBreakdown").innerHTML=entries.length?'<table class="tbl"><thead><tr><th>Supplier</th><th>Recorded cost</th></tr></thead><tbody>'+entries.map(x=>'<tr><td>'+esc(x[0])+'</td><td>'+money(x[1])+'</td></tr>').join('')+'</tbody></table>':'<div class="notice">No supplier cost data.</div>';
     }catch(e){$("#financeStats").innerHTML='<div class="notice">Finance unavailable: '+esc(e.message)+'</div>'}
   }
-  $("#refreshFinance").onclick=load; await load();
+  async function returns(){
+    try{
+      const rows=await api("/api/admin/returns");
+      $("#returnsList").innerHTML=rows.length?'<table class="tbl"><thead><tr><th>Return</th><th>Order</th><th>Reason</th><th>Status</th><th>Action</th></tr></thead><tbody>'+rows.map(x=>'<tr><td>'+esc(x.id)+'</td><td>'+esc(x.order_id)+'</td><td>'+esc(x.reason||'')+'</td><td>'+esc(x.status)+'</td><td><select class="ret-status" data-id="'+esc(x.id)+'">'+['REQUESTED','APPROVED','REJECTED','RECEIVED','REFUNDED','CLOSED'].map(s=>'<option '+(s===x.status?'selected':'')+'>'+s+'</option>').join('')+'</select></td></tr>').join('')+'</tbody></table>':'<div class="notice">No return requests.</div>';
+      $$('.ret-status').forEach(s=>s.onchange=async e=>{try{await api('/api/admin/returns/'+encodeURIComponent(e.target.dataset.id),{method:'PATCH',body:{status:e.target.value}});await returns()}catch(err){alert(err.message)}});
+    }catch(e){$("#returnsList").innerHTML='<div class="notice">Returns unavailable: '+esc(e.message)+'</div>'}
+  }
+  async function ads(){
+    try{const d=await api("/api/admin/ads/summary?days=30");$("#adsStats").innerHTML=[["Spend",money(d.spend_inr)],["Clicks",d.clicks||0],["Conversions",d.conversions||0],["CPA",d.cpa_inr==null?"—":money(d.cpa_inr)]].map(x=>'<div class="stat"><div class="label">'+esc(x[0])+'</div><div class="value" style="font-size:1.15rem">'+esc(String(x[1]))+'</div></div>').join('')}catch(e){$("#adsStats").innerHTML='<div class="notice">Ad attribution unavailable: '+esc(e.message)+'</div>'}
+  }
+  $("#refreshFinance").onclick=load;$("#refreshReturns").onclick=returns;$("#refreshAds").onclick=ads;
+  $("#importAds").onclick=async()=>{try{const d=await api("/api/admin/ads/import",{method:"POST"});alert("Imported "+d.saved+" ad-spend rows.");await ads();await load()}catch(e){alert(e.message)}};
+  $("#addFin").onclick=async()=>{try{await api("/api/admin/finance/entries",{method:"POST",body:{category:$("#finCat").value,amount_inr:Number($("#finAmt").value||0),gst_rate:Number($("#finGst").value||0),entry_date:$("#finDate").value||undefined,notes:$("#finNotes").value}});alert("Expense saved.");await load()}catch(e){alert(e.message)}};
+  load();returns();ads();
 }
 async function pricingView(){
   const options=products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('');

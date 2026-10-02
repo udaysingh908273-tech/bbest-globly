@@ -1062,11 +1062,54 @@ function getAuth(req) {
   if (!s || s.expires < Date.now()) return null;
   return { token: m[1], session: s };
 }
-function startSession(kind, id) {
+
+const ADMIN_ROLES=['owner','manager','support','finance','marketing'];
+function roleAllows(role,allowed){return allowed.includes(String(role||'owner'))}
+async function ensureOwnerAdminUser(){
+  if(!supabaseReady||!ADMIN_RECOVERY_EMAIL)return;
+  try{
+    const rows=await supabaseRequest('admin_users?select=id&id=eq.owner');
+    if(Array.isArray(rows)&&rows.length)return;
+    const db=await getAdminCredentialRow();
+    await supabaseRequest('admin_users?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([{
+      id:'owner',username:'admin',email:ADMIN_RECOVERY_EMAIL,password_hash:db?.password_hash||null,salt:db?.salt||null,role:'owner',enabled:true,two_factor_required:ADMIN_2FA_REQUIRED
+    }])});
+  }catch(e){console.error('[admin user bootstrap]',e.message)}
+}
+async function getAdminUser(username){
+  if(!supabaseReady)return null;
+  const rows=await supabaseRequest('admin_users?select=*&username=eq.'+encodeURIComponent(username)+'&limit=1');
+  return Array.isArray(rows)?rows[0]||null:null;
+}
+async function sendAdminLoginOtp(username,user){
+  if(!gmailOtpReady)throw new Error('2FA email is not configured');
+  if(!user?.email)throw new Error('Admin user has no recovery email');
+  const otp=String(crypto.randomInt(100000,1000000)),salt=newSalt(),hash=hashPw(otp,salt),id='L2-'+crypto.randomBytes(8).toString('hex');
+  const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
+  await transporter.sendMail({from:GMAIL_SMTP_USER,to:user.email,subject:'BBest Globly admin login OTP',text:'Your login verification code is '+otp+'. It expires in 10 minutes.'});
+  await supabaseRequest('admin_login_otps',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([{id,username,email:user.email,otp_hash:hash,otp_salt:salt,attempts:0,used:false,expires_at:new Date(Date.now()+10*60*1000).toISOString()}])});
+}
+async function verifyAdminLoginOtp(username,otp){
+  const rows=await supabaseRequest('admin_login_otps?select=*&username=eq.'+encodeURIComponent(username)+'&used=eq.false&order=created_at.desc&limit=1');
+  const row=Array.isArray(rows)?rows[0]:null;if(!row)throw new Error('Login OTP not found. Request a new code.');
+  if(new Date(row.expires_at).getTime()<Date.now())throw new Error('Login OTP expired.');
+  if(Number(row.attempts||0)>=5)throw new Error('Too many incorrect OTP attempts.');
+  const h=hashPw(String(otp||''),row.otp_salt),a=Buffer.from(h),b=Buffer.from(row.otp_hash);
+  if(a.length!==b.length||!crypto.timingSafeEqual(a,b)){
+    await supabaseRequest('admin_login_otps?id=eq.'+encodeURIComponent(row.id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify({attempts:Number(row.attempts||0)+1})});
+    throw new Error('Incorrect login OTP');
+  }
+  await supabaseRequest('admin_login_otps?id=eq.'+encodeURIComponent(row.id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify({used:true})});
+}
+function getAdminRole(req){
+  const a=getAuth(req);return a?.session?.adminRole||'owner';
+}
+
+function startSession(kind, id, adminRole) {
   const sessions = readJSON('sessions.json', {});
   const token = newToken();
   sessions[token] = kind === 'admin'
-    ? { admin: true, expires: Date.now() + 7 * 864e5 }
+    ? { admin: true, adminRole: adminRole || 'owner', expires: Date.now() + 7 * 864e5 }
     : { customerId: id, expires: Date.now() + 7 * 864e5 };
   writeJSON('sessions.json', sessions);
   return token;
@@ -1387,14 +1430,41 @@ const server = http.createServer(async (req, res) => {
         }
         return json(res, 401, { error: 'invalid credentials' });
       }
-      await auditAdmin('admin','LOGIN_SUCCESS','admin','admin',{});
-      console.log('[admin] login ok');
-      return json(res, 200, { ok: true, token: startSession('admin') });
+      let role='owner',twoFactor=ADMIN_2FA_REQUIRED;
+      if(supabaseReady){
+        try{
+          await ensureOwnerAdminUser();
+          const user=await getAdminUser(username);
+          if(user){if(user.enabled===false)return json(res,403,{error:'Admin user is disabled'});role=ADMIN_ROLES.includes(user.role)?user.role:'owner';twoFactor=user.two_factor_required===true;}
+        }catch(e){console.error('[admin role lookup]',e.message)}
+      }
+      if(twoFactor){
+        try{await sendAdminLoginOtp(username,{email:ADMIN_RECOVERY_EMAIL});return json(res,200,{ok:true,requires_2fa:true,username,role})}
+        catch(e){return json(res,503,{error:e.message})}
+      }
+      await auditAdmin(username,'LOGIN_SUCCESS','admin',username,{role});
+      return json(res, 200, { ok: true, token: startSession('admin',null,role), role });
+    }
+
+    if (p === '/api/admin/login/verify-otp' && req.method === 'POST') {
+      const b=await readBody(req),username=String(b.username||'').trim(),otp=String(b.otp||'').trim();
+      if(username!=='admin'||!otp)return json(res,400,{error:'username and OTP are required'});
+      try{
+        await verifyAdminLoginOtp(username,otp);
+        let role='owner';if(supabaseReady){const u=await getAdminUser(username);if(u?.role&&ADMIN_ROLES.includes(u.role))role=u.role;}
+        await auditAdmin(username,'LOGIN_2FA_SUCCESS','admin',username,{role});
+        return json(res,200,{ok:true,token:startSession('admin',null,role),role});
+      }catch(e){return json(res,401,{error:e.message})}
     }
 
     if (p.startsWith('/api/admin/')) {
       const a = getAuth(req);
       if (!a || a.session.admin !== true) return json(res, 401, { error: 'admin access required' });
+      const adminRole=a.session.adminRole||'owner';
+      if(p.startsWith('/api/admin/finance') && !roleAllows(adminRole,['owner','finance']))return json(res,403,{error:'Finance role required'});
+      if((p.startsWith('/api/admin/agent')||p.startsWith('/api/admin/agent-controls')) && !roleAllows(adminRole,['owner','manager']))return json(res,403,{error:'Manager role required'});
+      if(p.startsWith('/api/admin/marketing') && !roleAllows(adminRole,['owner','manager','marketing']))return json(res,403,{error:'Marketing role required'});
+      if(p.startsWith('/api/admin/support') && !roleAllows(adminRole,['owner','manager','support']))return json(res,403,{error:'Support role required'});
 
       if (p === '/api/admin/suppliers/qikink/catalog' && req.method === 'GET') {
         try {
@@ -1425,6 +1495,33 @@ const server = http.createServer(async (req, res) => {
           if(local){local.supplier='Qikink';local.supplier_status='ERROR';local.supplier_error=e.message;local.updated_at=new Date().toISOString();saveOrders(latest)}
           return json(res,502,{error:e.message});
         }
+      }
+
+      if (p === '/api/admin/users' && req.method === 'GET') {
+        if(!roleAllows(adminRole,['owner']))return json(res,403,{error:'Owner role required'});
+        if(!supabaseReady)return json(res,200,[]);
+        const rows=await supabaseRequest('admin_users?select=id,username,email,role,enabled,two_factor_required,created_at,updated_at&order=created_at.asc');
+        return json(res,200,Array.isArray(rows)?rows:[]);
+      }
+      if (p === '/api/admin/users' && req.method === 'POST') {
+        if(!roleAllows(adminRole,['owner']))return json(res,403,{error:'Owner role required'});
+        const b=await readBody(req),username=String(b.username||'').trim().slice(0,50),email=String(b.email||'').trim().toLowerCase(),role=String(b.role||'support');
+        if(!username||!email||!ADMIN_ROLES.includes(role))return json(res,400,{error:'username, email and valid role are required'});
+        const id='U-'+crypto.randomBytes(8).toString('hex');
+        await supabaseRequest('admin_users?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([{id,username,email,role,enabled:true,two_factor_required:b.two_factor_required!==false,created_at:new Date().toISOString(),updated_at:new Date().toISOString()}])});
+        await auditAdmin(adminRole,'CREATE_ADMIN_USER','admin_user',id,{username,email,role});
+        return json(res,201,{ok:true,id,username,email,role});
+      }
+      if (p.startsWith('/api/admin/users/') && req.method === 'PATCH') {
+        if(!roleAllows(adminRole,['owner']))return json(res,403,{error:'Owner role required'});
+        const id=decodeURIComponent(p.slice('/api/admin/users/'.length)),b=await readBody(req),patch={updated_at:new Date().toISOString()};
+        if(b.role!==undefined){if(!ADMIN_ROLES.includes(String(b.role)))return json(res,400,{error:'invalid role'});patch.role=String(b.role)}
+        if(b.enabled!==undefined)patch.enabled=b.enabled===true;
+        if(b.two_factor_required!==undefined)patch.two_factor_required=b.two_factor_required!==false;
+        if(b.email!==undefined)patch.email=String(b.email).trim().toLowerCase();
+        await supabaseRequest('admin_users?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify(patch)});
+        await auditAdmin(adminRole,'UPDATE_ADMIN_USER','admin_user',id,patch);
+        return json(res,200,{ok:true,id,...patch});
       }
 
       if (p === '/api/admin/readiness' && req.method === 'GET') {

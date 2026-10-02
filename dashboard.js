@@ -21,7 +21,80 @@ function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&l
 async function refresh(){products=await api('/api/admin/products');orders=await api('/api/admin/orders')}
 function setView(v){currentView=v;$$('.view').forEach(x=>x.classList.toggle('hidden',x.id!==v));$$('.nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.view===v));const t={overview:'Business Overview',products:'Product Management',orders:'Orders',suppliers:'Supplier / Dropshipping',research:'AI Product Research',marketing:'AI Marketing',seo:'AI SEO Manager',support:'Customer Support',approvals:'Approval Center'};$('#pageTitle').textContent=t[v]||'Business Overview';render()}
 function render(){if(!token)return;if(currentView==='overview')overview();if(currentView==='products')productView();if(currentView==='orders')orderView();if(currentView==='suppliers')supplierView();if(currentView==='research')researchView();if(currentView==='marketing')marketingView();if(currentView==='seo')seoView();if(currentView==='support')supportView();if(currentView==='approvals')approvalView()}
-function overview(){const revenue=orders.filter(o=>o.status!=='CANCELLED').reduce((s,o)=>s+Number(o.totals?.total_inr||0),0),pending=orders.filter(o=>o.status==='PENDING').length;$('#overview').innerHTML='<div class="grid stats"><div class="stat"><div class="label">Orders</div><div class="value">'+orders.length+'</div></div><div class="stat"><div class="label">Revenue</div><div class="value">'+money(revenue)+'</div></div><div class="stat"><div class="label">Pending</div><div class="value">'+pending+'</div></div><div class="stat"><div class="label">Products</div><div class="value">'+products.length+'</div></div></div><div class="section-card"><div class="section-head"><h2>Store Overview</h2><span class="badge">AI Manager on the right →</span></div><p class="muted">Your main dashboard stays clean. Open the AI Manager from the right side whenever you need it.</p></div><div class="section-card"><div class="section-head"><h2>Quick actions</h2></div><div class="actions"><button class="btn soft" data-go="products">Add product</button><button class="btn soft" data-go="research">Research products</button><button class="btn soft" data-go="marketing">Create campaign</button><button class="btn soft" data-go="seo">SEO audit</button></div></div>';$('[data-go="products"]').onclick=()=>setView('products');$('[data-go="research"]').onclick=()=>setView('research');$('[data-go="marketing"]').onclick=()=>setView('marketing');$('[data-go="seo"]').onclick=()=>setView('seo')}function renderAgentActions(actions){
+async function overview(){
+  const active=orders.filter(o=>o.status!=="CANCELLED");
+  const booked=active.reduce((s,o)=>s+Number(o.totals?.total_inr||0),0);
+  const collected=active.filter(o=>o.payment?.paid===true).reduce((s,o)=>s+Number(o.totals?.total_inr||0),0);
+  const open=active.filter(o=>!["DELIVERED","CANCELLED"].includes(o.status)).length;
+  const aov=active.length?booked/active.length:0;
+  const units={};
+  for(const o of active){
+    for(const item of (o.items||[])){
+      const qty=Math.max(0,Number(item.qty)||0);
+      const p=products.find(x=>x.id===item.id);
+      if(!p)continue;
+      if(!units[p.id])units[p.id]={name:p.name,units:0,sales:0};
+      units[p.id].units+=qty;
+      units[p.id].sales+=qty*Number(item.price_inr||p.price_inr||0);
+    }
+  }
+  const top=Object.values(units).sort((a,b)=>b.sales-a.sales).slice(0,5);
+  const lowStock=products.filter(p=>p.published!==false&&Number(p.stock??0)<=5);
+  $("#overview").innerHTML=
+    "<div class=\"grid stats\">"+
+      "<div class=\"stat\"><div class=\"label\">Orders</div><div class=\"value\">"+orders.length+"</div></div>"+
+      "<div class=\"stat\"><div class=\"label\">Sales booked</div><div class=\"value\">"+money(booked)+"</div></div>"+
+      "<div class=\"stat\"><div class=\"label\">Collected</div><div class=\"value\">"+money(collected)+"</div></div>"+
+      "<div class=\"stat\"><div class=\"label\">AOV</div><div class=\"value\">"+money(aov)+"</div></div>"+
+    "</div>"+
+    "<div class=\"grid stats\" style=\"margin-top:16px\">"+
+      "<div class=\"stat\"><div class=\"label\">Open orders</div><div class=\"value\">"+open+"</div></div>"+
+      "<div class=\"stat\"><div class=\"label\">Units sold</div><div class=\"value\">"+Object.values(units).reduce((s,x)=>s+x.units,0)+"</div></div>"+
+      "<div class=\"stat\"><div class=\"label\">Products</div><div class=\"value\">"+products.length+"</div></div>"+
+      "<div class=\"stat\"><div class=\"label\">Low stock</div><div class=\"value\">"+lowStock.length+"</div></div>"+
+    "</div>"+
+    "<div class=\"section-card\"><div class=\"section-head\"><div><h2>Business Analytics</h2><div class=\"muted\">Based only on recorded store data.</div></div><span class=\"badge\">No invented metrics</span></div>"+
+      "<div class=\"table-wrap\"><table class=\"tbl\"><thead><tr><th>Top product</th><th>Units</th><th>Booked sales</th></tr></thead><tbody>"+
+      (top.length?top.map(x=>"<tr><td>"+esc(x.name)+"</td><td>"+x.units+"</td><td>"+money(x.sales)+"</td></tr>").join(""):"<tr><td colspan=\"3\">No product sales recorded yet.</td></tr>")+
+      "</tbody></table></div>"+
+      "<p class=\"muted\" style=\"margin-bottom:0\">Traffic, conversion rate and customer acquisition cost are not available yet because site analytics/ad spend tracking is not connected.</p>"+
+    "</div>"+
+    "<div class=\"section-card\"><div class=\"section-head\"><div><h2>Operational Readiness</h2><div class=\"muted\">Live connection checks for the admin workspace.</div></div><button class=\"btn soft\" id=\"refreshReadiness\">Refresh</button></div>"+
+      "<div id=\"readinessGrid\" class=\"grid\" style=\"grid-template-columns:repeat(3,minmax(0,1fr))\"><div class=\"notice\">Checking integrations…</div></div>"+
+    "</div>"+
+    "<div class=\"section-card\"><div class=\"section-head\"><h2>Quick actions</h2></div><div class=\"actions\">"+
+      "<button class=\"btn soft\" data-go=\"products\">Add product</button>"+
+      "<button class=\"btn soft\" data-go=\"research\">Research products</button>"+
+      "<button class=\"btn soft\" data-go=\"marketing\">Create campaign</button>"+
+      "<button class=\"btn soft\" data-go=\"seo\">SEO audit</button>"+
+      "</div></div>";
+  $("[data-go=\"products\"]").onclick=()=>setView("products");
+  $("[data-go=\"research\"]").onclick=()=>setView("research");
+  $("[data-go=\"marketing\"]").onclick=()=>setView("marketing");
+  $("[data-go=\"seo\"]").onclick=()=>setView("seo");
+
+  async function readiness(){
+    const box=$("#readinessGrid");
+    if(!box)return;
+    try{
+      const d=await api("/api/admin/readiness");
+      const items=[
+        ["AI Manager",d.ai?.configured,d.ai?.liveResearchConfigured?"AI + research":"AI only"],
+        ["Supabase data",d.persistence?.configured,d.persistence?.configured?"Connected":"Not connected"],
+        ["Password recovery",d.password_recovery?.configured,d.password_recovery?.configured?"Gmail OTP ready":"Needs Gmail SMTP"],
+        ["Razorpay",d.payments?.configured,d.payments?.configured?"Payments ready":"Test/live keys not ready"],
+        ["Shiprocket",d.shipping?.configured,d.shipping?.configured?"Shipping ready":"Not connected"],
+        ["Qikink",d.supplier_qikink?.configured,d.supplier_qikink?.configured?"Supplier API ready":"Not connected"]
+      ];
+      box.innerHTML=items.map(x=>"<div class=\"stat\"><div class=\"label\">"+esc(x[0])+"</div><div class=\"value\" style=\"font-size:1rem\">"+(x[1]?"READY":"SETUP NEEDED")+"</div><div class=\"muted\">"+esc(x[2])+"</div></div>").join("");
+    }catch(e){
+      box.innerHTML="<div class=\"notice\">Readiness check failed: "+esc(e.message)+"</div>";
+    }
+  }
+  $("#refreshReadiness").onclick=readiness;
+  readiness();
+}
+function renderAgentActions(actions){
   const box=$('#aiHistory'); if(!box) return;
   const cards=(actions||[]).map((a,i)=>{
     return '<div class="agent-action" id="agentAction'+i+'"><strong>Approval required</strong><div class="agent-type">'+esc(a.type||'action')+'</div><div class="muted">'+esc(a.reason||'Owner approval required')+'</div><pre>'+esc(JSON.stringify(a.payload||{},null,2))+'</pre><div class="actions"><button class="btn primary agent-approve" data-index="'+i+'">Approve & Execute</button><button class="btn danger agent-reject" data-index="'+i+'">Reject</button></div></div>';

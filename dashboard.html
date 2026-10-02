@@ -38,7 +38,8 @@
 <section id="loginPanel" class="panel login-panel hidden">
 <h2>Owner / Manager Login</h2><p>Use the existing BBest Globly admin credentials.</p>
 <input id="loginUser" value="admin" placeholder="Username"><input id="loginPass" type="password" placeholder="Password">
-<button id="loginBtn" class="primary">Login</button><button id="forgotBtn" type="button" class="ghost" style="margin-top:8px">Forgot password? (Email OTP)</button><button id="recoveryKeyBtn" type="button" class="ghost" style="margin-top:8px">Use recovery key</button><div id="resetPanel" class="reset-panel hidden"><h3>Reset admin password</h3><p class="muted">Enter your recovery Gmail. We will send a one-time code.</p><div class="reset-grid"><input id="resetEmail" type="email" placeholder="Recovery Gmail" autocomplete="email"><button id="sendOtpBtn" class="btn primary" type="button">Send OTP</button><input id="resetOtp" inputmode="numeric" maxlength="6" placeholder="6-digit OTP"><input id="resetNewPw" type="password" placeholder="New password (10+ characters)"><button id="resetPasswordBtn" class="btn primary" type="button">Reset password</button></div><p id="resetMsg" class="error"></p></div><p id="loginErr" class="error"></p>
+<button id="loginBtn" class="primary">Login</button>
+<div id="login2faPanel" class="reset-panel hidden"><h3>2-step verification</h3><p class="muted">Enter the OTP sent to the admin recovery email.</p><div class="reset-grid"><input id="loginOtp" inputmode="numeric" maxlength="6" placeholder="6-digit OTP"><button id="verifyLoginOtpBtn" class="btn primary" type="button">Verify & Login</button></div><p id="login2faMsg" class="error"></p></div><button id="forgotBtn" type="button" class="ghost" style="margin-top:8px">Forgot password? (Email OTP)</button><button id="recoveryKeyBtn" type="button" class="ghost" style="margin-top:8px">Use recovery key</button><div id="resetPanel" class="reset-panel hidden"><h3>Reset admin password</h3><p class="muted">Enter your recovery Gmail. We will send a one-time code.</p><div class="reset-grid"><input id="resetEmail" type="email" placeholder="Recovery Gmail" autocomplete="email"><button id="sendOtpBtn" class="btn primary" type="button">Send OTP</button><input id="resetOtp" inputmode="numeric" maxlength="6" placeholder="6-digit OTP"><input id="resetNewPw" type="password" placeholder="New password (10+ characters)"><button id="resetPasswordBtn" class="btn primary" type="button">Reset password</button></div><p id="resetMsg" class="error"></p></div><p id="loginErr" class="error"></p>
 </section>
 <section id="appPanel" class="hidden">
 <div id="overview" class="view"></div><div id="products" class="view hidden"></div><div id="orders" class="view hidden"></div>
@@ -48,6 +49,6 @@
 </section>
 </main>
 </div>
-<script src="/dashboard.js?v=20261003-8"></script>
+<script src="/dashboard.js?v=20261003-9"></script>
 </body>
 </html>

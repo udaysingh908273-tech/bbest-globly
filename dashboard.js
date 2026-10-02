@@ -176,26 +176,34 @@ async function approvalView(){
 
 function initAISidePanel(){ /* AI Manager is rendered inside Approval Center. */ }
 $$$('.nav-btn').forEach(b=>b.onclick=()=>setView(b.dataset.view));
-$('#forgotBtn').onclick=async()=>{
-  const email=prompt('Enter your recovery Gmail address:');
-  if(email===null)return;
+$('#forgotBtn').onclick=()=>{
+  $('#resetPanel').classList.toggle('hidden');
+  $('#resetEmail').focus();
+  $('#loginErr').textContent='';
+};
+$('#sendOtpBtn').onclick=async()=>{
+  const email=$('#resetEmail').value.trim(), msg=$('#resetMsg');
+  if(!email){msg.textContent='Enter your recovery Gmail.';return}
+  const b=$('#sendOtpBtn'); b.disabled=true; b.textContent='Sending…'; msg.textContent='';
   try{
-    const r=await fetch('/api/admin/forgot-password/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.trim()})});
-    const d=await r.json();
-    if(!r.ok)throw Error(d.error||'Could not send OTP');
-    const otp=prompt((d.message||'OTP sent.')+' Enter the 6-digit OTP:');
-    if(otp===null)return;
-    const pw=prompt('Set a new admin password (minimum 10 characters):');
-    if(pw===null)return;
-    const v=await fetch('/api/admin/forgot-password/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:email.trim(),otp:otp.trim(),new_password:pw})});
-    const vd=await v.json();
-    if(!v.ok)throw Error(vd.error||'Password reset failed');
-    $('#loginErr').textContent=vd.message||'Password reset successfully. You can now log in.';
-    $('#loginErr').style.color='var(--ok)';
-  }catch(e){
-    $('#loginErr').textContent=e.message;
-    $('#loginErr').style.color='var(--danger)';
-  }
+    const r=await fetch('/api/admin/forgot-password/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+    const d=await r.json(); if(!r.ok) throw Error(d.error||'Unable to request OTP');
+    msg.style.color='var(--ok)'; msg.textContent=d.message||'Check your Gmail for the OTP.';
+    $('#resetOtp').focus();
+  }catch(e){msg.style.color='var(--danger)';msg.textContent=e.message}
+  finally{b.disabled=false;b.textContent='Send OTP'}
+};
+$('#resetPasswordBtn').onclick=async()=>{
+  const email=$('#resetEmail').value.trim(), otp=$('#resetOtp').value.trim(), pw=$('#resetNewPw').value;
+  const msg=$('#resetMsg');
+  if(!email||!otp||!pw){msg.style.color='var(--danger)';msg.textContent='Fill email, OTP and new password.';return}
+  const b=$('#resetPasswordBtn'); b.disabled=true; b.textContent='Resetting…'; msg.textContent='';
+  try{
+    const r=await fetch('/api/admin/forgot-password/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,otp,new_password:pw})});
+    const d=await r.json(); if(!r.ok) throw Error(d.error||'Password reset failed');
+    msg.style.color='var(--ok)'; msg.textContent=d.message||'Password reset. You can now login.';
+  }catch(e){msg.style.color='var(--danger)';msg.textContent=e.message}
+  finally{b.disabled=false;b.textContent='Reset password'}
 };
 $('#recoveryKeyBtn').onclick=async()=>{
   const key=prompt('Enter your ADMIN_RESET_KEY from Render Environment Variables:');
@@ -205,7 +213,7 @@ $('#recoveryKeyBtn').onclick=async()=>{
   try{
     const r=await fetch('/api/admin/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recovery_key:key,new_password:pw})});
     const d=await r.json();
-    if(!r.ok)throw Error(d.error||'Password reset failed');
+    if(!r.ok) throw Error(d.error||'Password reset failed');
     $('#loginErr').textContent=d.message||'Password reset successfully. Please log in.';
     $('#loginErr').style.color='var(--ok)';
   }catch(e){

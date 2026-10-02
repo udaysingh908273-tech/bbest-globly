@@ -137,6 +137,98 @@ async function updateAgentApproval(id, patch) {
   });
 }
 
+const DEFAULT_AGENT_CONTROLS = {
+  global:{id:'global',label:'Global AI System',enabled:true,mode:'APPROVAL_ONLY',min_margin_pct:25,max_discount_pct:10,max_refund_inr:500},
+  order:{id:'order',label:'Order Agent',enabled:true,mode:'APPROVAL_ONLY',min_margin_pct:25,max_discount_pct:0,max_refund_inr:0},
+  supplier:{id:'supplier',label:'Supplier Agent',enabled:true,mode:'APPROVAL_ONLY',min_margin_pct:25,max_discount_pct:0,max_refund_inr:0},
+  research:{id:'research',label:'Product Research Agent',enabled:true,mode:'APPROVAL_ONLY',min_margin_pct:25,max_discount_pct:10,max_refund_inr:0},
+  catalog:{id:'catalog',label:'Catalog Agent',enabled:true,mode:'APPROVAL_ONLY',min_margin_pct:25,max_discount_pct:10,max_refund_inr:0},
+  pricing:{id:'pricing',label:'Pricing & Margin Agent',enabled:true,mode:'APPROVAL_ONLY',min_margin_pct:25,max_discount_pct:10,max_refund_inr:0},
+  offers:{id:'offers',label:'Offers Agent',enabled:true,mode:'APPROVAL_ONLY',min_margin_pct:25,max_discount_pct:10,max_refund_inr:500},
+  support:{id:'support',label:'Support Agent',enabled:true,mode:'AUTO',min_margin_pct:0,max_discount_pct:0,max_refund_inr:500},
+  finance:{id:'finance',label:'Finance Agent',enabled:true,mode:'AUTO',min_margin_pct:0,max_discount_pct:0,max_refund_inr:0},
+  owner_assistant:{id:'owner_assistant',label:'Owner Assistant',enabled:true,mode:'AUTO',min_margin_pct:0,max_discount_pct:0,max_refund_inr:0}
+};
+
+async function getAgentControls(){
+  const fallback=Object.values(DEFAULT_AGENT_CONTROLS);
+  if(!supabaseReady) return fallback;
+  try{
+    const rows=await supabaseRequest('agent_controls?select=*&order=id.asc');
+    if(Array.isArray(rows)&&rows.length) return rows;
+  }catch(e){console.error('[agent controls]',e.message)}
+  return fallback;
+}
+async function getAgentControl(id){
+  const clean=String(id||'').trim();
+  const fallback=DEFAULT_AGENT_CONTROLS[clean]||DEFAULT_AGENT_CONTROLS.global;
+  if(!supabaseReady) return fallback;
+  try{
+    const rows=await supabaseRequest('agent_controls?select=*&id=eq.'+encodeURIComponent(clean));
+    return Array.isArray(rows)&&rows[0]?rows[0]:fallback;
+  }catch{return fallback}
+}
+function agentControlForAction(type){
+  const t=String(type||'');
+  if(t==='set_order_status') return 'order';
+  if(t==='add_product') return 'catalog';
+  if(t==='update_product') return 'pricing';
+  if(t==='delete_product') return 'catalog';
+  if(t==='set_site_config') return 'catalog';
+  return 'global';
+}
+async function assertAgentActionAllowed(type){
+  const global=await getAgentControl('global');
+  if(global.enabled===false) throw new Error('AI Kill Switch is ON. Agent actions are paused.');
+  const key=agentControlForAction(type),control=await getAgentControl(key);
+  if(control.enabled===false) throw new Error((control.label||key)+' is disabled.');
+  return control;
+}
+async function auditAdmin(actor,action,targetType,targetId,details={}){
+  if(!supabaseReady)return;
+  try{
+    await supabaseRequest('admin_audit_logs',{
+      method:'POST',
+      headers:{'Prefer':'return=minimal'},
+      body:JSON.stringify({actor:String(actor||'admin'),action,target_type:targetType||null,target_id:targetId||null,details})
+    });
+  }catch(e){console.error('[audit]',e.message)}
+}
+function safeAnalyticsMetadata(input){
+  const allowed={};
+  if(input && typeof input==='object'){
+    for(const [k,v] of Object.entries(input).slice(0,12)){
+      if(['string','number','boolean'].includes(typeof v)) allowed[String(k).slice(0,40)]=v;
+    }
+  }
+  return allowed;
+}
+async function buildFinanceSummary(){
+  const products=loadCatalog();
+  const orders=loadOrders().filter(o=>o.status!=='CANCELLED');
+  let sales=0,cost=0,units=0,collected=0;
+  const supplierTotals={};
+  for(const o of orders){
+    sales+=Number(o.totals?.total_inr||0);
+    if(o.payment?.paid===true)collected+=Number(o.totals?.total_inr||0);
+    for(const item of o.items||[]){
+      const qty=Math.max(0,Number(item.qty)||0); units+=qty;
+      const p=products.find(x=>x.id===item.id);
+      const unitCost=Number(p?.supplier_cost_inr||0);
+      cost+=unitCost*qty;
+      const supplier=String(p?.supplier||'Unassigned');
+      supplierTotals[supplier]=(supplierTotals[supplier]||0)+unitCost*qty;
+    }
+  }
+  const grossProfit=sales-cost;
+  return {
+    orders:orders.length,sales_inr:sales,collected_inr:collected,units_sold:units,
+    supplier_cost_inr:cost,estimated_gross_profit_inr:grossProfit,
+    estimated_gross_margin_pct:sales>0?(grossProfit/sales)*100:null,
+    note:'Estimated gross profit uses recorded supplier_cost_inr only. Gateway fees, taxes, shipping, refunds, returns and ad spend are not deducted unless recorded separately.',
+    supplier_cost_breakdown:supplierTotals
+  };
+}
 
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
@@ -771,22 +863,27 @@ async function askAI(message, context = {}, task = 'general') {
 }
 
 async function agentCommand(command) {
+  const globalControl=await getAgentControl('global');
+  if(globalControl.enabled===false) return {configured:aiReady,reply:'AI Kill Switch is ON. No agent action will be created.',actions:[]};
   let qikink_catalog = [];
   if (/qikink|supplier|dropship|fulfill|catalog/i.test(command)) {
     try { qikink_catalog = await fetchQikinkPublicCatalog(); } catch {}
   }
   const system = [
     'You are the BBest Globly Agentic Business Manager.',
+    'Act like a cross-functional ecommerce operations team: orders, suppliers, product research, catalog, pricing, offers, support, finance and owner reporting.',
     'Plan concrete business actions from the owner request using ONLY supplied store data and business knowledge.',
+    'Never fabricate live market data, supplier facts, sales, stock, ad performance, customer facts or delivery promises.',
     'Return JSON ONLY with this exact shape:',
     '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status","payload":{},"reason":"string","requiresApproval":true}]}',
-    'Never fabricate missing product facts. Ask for missing essential details in reply and return no action when needed.',
-    'Every action returned must have requiresApproval=true.',
+    'Every state-changing action returned must have requiresApproval=true. Never bypass the approval workflow.',
+    'Respect the configured minimum margin, maximum discount and refund limits supplied in agent controls when making recommendations.',
     'For add_product, payload may include name, category, tagline, price_inr, compare_at_inr, img, badges, description, features, sku, supplier, supplier_sku, supplier_cost_inr, stock.',
     'For update_product, payload must include id plus fields to update.',
     'For delete_product, payload must include id.',
     'For set_site_config, payload may include hero and theme fields only.',
-    'For set_order_status, payload must include id and status.'
+    'For set_order_status, payload must include id and status.',
+    'Clearly separate REAL DATA, AI ANALYSIS, AI RECOMMENDATION and NEEDS OWNER APPROVAL.'
   ].join(' ');
   const raw=await callAI([
     {role:'system',content:system},
@@ -797,9 +894,18 @@ async function agentCommand(command) {
     await logAgent('owner', command, {reply:raw,actions:[]});
     return {configured:true,reply:raw,actions:[]};
   }
-  const planned = Array.isArray(parsed.actions)
+  const proposed = Array.isArray(parsed.actions)
     ? parsed.actions.map(a=>({...a,requiresApproval:true})).slice(0,5)
     : [];
+  const planned=[];
+  for(const a of proposed){
+    try{
+      await assertAgentActionAllowed(a.type);
+      planned.push(a);
+    }catch(e){
+      await logAgent('system', command, {blocked_action:a.type,reason:e.message});
+    }
+  }
   let stored = [];
   if (planned.length) {
     stored = await createAgentApprovals(planned);
@@ -1021,6 +1127,48 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    /* ---------------- public analytics / support ---------------- */
+    if (p === '/api/analytics/event' && req.method === 'POST') {
+      const b=await readBody(req);
+      const allowed=['page_view','product_view','add_to_cart','checkout_start','purchase_success'];
+      const event_name=String(b.event_name||'');
+      if(!allowed.includes(event_name)) return json(res,400,{error:'unsupported analytics event'});
+      const session_id=String(b.session_id||'').trim().slice(0,80);
+      if(!session_id)return json(res,400,{error:'session_id is required'});
+      if(!supabaseReady)return json(res,202,{ok:true,persisted:false});
+      await supabaseRequest('analytics_events',{
+        method:'POST',
+        headers:{'Prefer':'return=minimal'},
+        body:JSON.stringify({
+          event_name,session_id,page:String(b.page||'').slice(0,180)||null,
+          product_id:String(b.product_id||'').slice(0,120)||null,
+          order_id:String(b.order_id||'').slice(0,120)||null,
+          metadata:safeAnalyticsMetadata(b.metadata)
+        })
+      });
+      return json(res,202,{ok:true,persisted:true});
+    }
+
+    if (p === '/api/support/tickets' && req.method === 'POST') {
+      const b=await readBody(req);
+      const subject=String(b.subject||'Support request').trim().slice(0,160);
+      const id='TCK-'+Date.now().toString(36).toUpperCase()+'-'+crypto.randomBytes(3).toString('hex').toUpperCase();
+      const message=String(b.message||'').trim().slice(0,3000);
+      if(!message)return json(res,400,{error:'message is required'});
+      const row={
+        id,status:'OPEN',priority:['LOW','NORMAL','HIGH','URGENT'].includes(String(b.priority||''))?String(b.priority):'NORMAL',
+        customer_name:String(b.customer_name||'').slice(0,100)||null,
+        customer_email:String(b.customer_email||'').trim().toLowerCase().slice(0,120)||null,
+        customer_phone:String(b.customer_phone||'').slice(0,30)||null,
+        order_id:String(b.order_id||'').slice(0,120)||null,subject,
+        messages:[{role:'customer',content:message,created_at:new Date().toISOString()}],
+        assigned_to:null
+      };
+      if(!supabaseReady)return json(res,202,{ok:true,id,persisted:false});
+      await supabaseRequest('support_tickets',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify(row)});
+      return json(res,201,{ok:true,id,persisted:true});
+    }
+
     /* ---------------- public storefront config ---------------- */
     if (p === '/api/site/config' && req.method === 'GET') {
       return json(res, 200, loadSiteConfig());
@@ -1118,6 +1266,7 @@ const server = http.createServer(async (req, res) => {
         }
         return json(res, 401, { error: 'invalid credentials' });
       }
+      await auditAdmin('admin','LOGIN_SUCCESS','admin','admin',{});
       console.log('[admin] login ok');
       return json(res, 200, { ok: true, token: startSession('admin') });
     }
@@ -1169,6 +1318,72 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      if (p === '/api/admin/agent-controls' && req.method === 'GET') {
+        return json(res,200,await getAgentControls());
+      }
+      if (p === '/api/admin/agent-controls' && req.method === 'PUT') {
+        const b=await readBody(req);
+        const id=String(b.id||'').trim();
+        const base=DEFAULT_AGENT_CONTROLS[id];
+        if(!base) return json(res,400,{error:'unknown agent control'});
+        const patch={
+          enabled:b.enabled!==false,
+          mode:['AUTO','LIMITED_AUTO','APPROVAL_ONLY'].includes(String(b.mode||base.mode))?String(b.mode||base.mode):base.mode,
+          min_margin_pct:Math.max(0,Math.min(100,Number(b.min_margin_pct??base.min_margin_pct))),
+          max_discount_pct:Math.max(0,Math.min(100,Number(b.max_discount_pct??base.max_discount_pct))),
+          max_refund_inr:Math.max(0,Number(b.max_refund_inr??base.max_refund_inr)),
+          updated_at:new Date().toISOString()
+        };
+        if(!supabaseReady)return json(res,503,{error:'Supabase is required for AI control persistence'});
+        await supabaseRequest('agent_controls?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify(patch)});
+        await auditAdmin('admin','UPDATE_AGENT_CONTROL','agent_control',id,patch);
+        return json(res,200,{ok:true,id,...patch});
+      }
+
+      if (p === '/api/admin/finance/summary' && req.method === 'GET') {
+        return json(res,200,await buildFinanceSummary());
+      }
+
+      if (p === '/api/admin/analytics/summary' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,{days:7,events:{},unique_sessions:0,top_products:[],note:'Analytics persistence is not configured.'});
+        const days=Math.max(1,Math.min(90,Number(url.searchParams.get('days')||7)));
+        const since=new Date(Date.now()-days*86400000).toISOString();
+        const rows=await supabaseRequest('analytics_events?select=event_name,session_id,product_id,created_at&created_at=gte.'+encodeURIComponent(since)+'&order=created_at.desc&limit=5000');
+        const events={},sessions=new Set(),productViews={};
+        for(const row of (Array.isArray(rows)?rows:[])){
+          events[row.event_name]=(events[row.event_name]||0)+1;
+          if(row.session_id)sessions.add(row.session_id);
+          if(row.product_id&&row.event_name==='product_view')productViews[row.product_id]=(productViews[row.product_id]||0)+1;
+        }
+        const top=Object.entries(productViews).sort((a,b)=>b[1]-a[1]).slice(0,10).map(([id,views])=>({id,views,name:loadCatalog().find(x=>x.id===id)?.name||id}));
+        return json(res,200,{days,events,unique_sessions:sessions.size,top_products:top,note:'Counts are based on tracked storefront events and may undercount users who block analytics.'});
+      }
+
+      if (p === '/api/admin/support/tickets' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,[]);
+        const rows=await supabaseRequest('support_tickets?select=*&order=updated_at.desc&limit=100');
+        return json(res,200,Array.isArray(rows)?rows:[]);
+      }
+      if (p.startsWith('/api/admin/support/tickets/') && req.method === 'PATCH') {
+        const id=decodeURIComponent(p.slice('/api/admin/support/tickets/'.length));
+        const b=await readBody(req);
+        const patch={};
+        if(['OPEN','IN_PROGRESS','WAITING','RESOLVED','CLOSED'].includes(String(b.status||'')))patch.status=String(b.status);
+        if(['LOW','NORMAL','HIGH','URGENT'].includes(String(b.priority||'')))patch.priority=String(b.priority);
+        if(b.assigned_to!==undefined)patch.assigned_to=String(b.assigned_to||'').slice(0,100)||null;
+        patch.updated_at=new Date().toISOString();
+        if(!supabaseReady)return json(res,503,{error:'Supabase is required for support tickets'});
+        await supabaseRequest('support_tickets?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify(patch)});
+        await auditAdmin('admin','UPDATE_SUPPORT_TICKET','support_ticket',id,patch);
+        return json(res,200,{ok:true,id,...patch});
+      }
+
+      if (p === '/api/admin/audit-logs' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,[]);
+        const rows=await supabaseRequest('admin_audit_logs?select=*&order=created_at.desc&limit=100');
+        return json(res,200,Array.isArray(rows)?rows:[]);
+      }
+
       if (p === '/api/admin/products' && req.method === 'GET') return json(res, 200, loadCatalog());
       if (p === '/api/admin/products' && req.method === 'POST') {
         try {
@@ -1178,6 +1393,7 @@ const server = http.createServer(async (req, res) => {
           if (catalog.some(x => x.id === prod.id || x.name.toLowerCase() === prod.name.toLowerCase())) return json(res, 409, {error:'A product with this name/id already exists'});
           catalog.push(prod);
           writeJSON('products.json', catalog);
+          await auditAdmin('admin','CREATE_PRODUCT','product',prod.id,{name:prod.name,price_inr:prod.price_inr});
           return json(res, 201, {ok:true, product:prod});
         } catch(e) { return json(res, 400, {error:e.message}); }
       }
@@ -1191,6 +1407,7 @@ const server = http.createServer(async (req, res) => {
           const prod = normalizeProductBody(b, id);
           catalog[ix] = {...catalog[ix], ...prod};
           writeJSON('products.json', catalog);
+          await auditAdmin('admin','UPDATE_PRODUCT','product',id,{name:catalog[ix].name,price_inr:catalog[ix].price_inr});
           return json(res, 200, {ok:true, product:catalog[ix]});
         } catch(e) { return json(res, 400, {error:e.message}); }
       }
@@ -1200,6 +1417,7 @@ const server = http.createServer(async (req, res) => {
         const next = catalog.filter(x => x.id !== id);
         if (next.length === catalog.length) return json(res, 404, {error:'product not found'});
         writeJSON('products.json', next);
+        await auditAdmin('admin','DELETE_PRODUCT','product',id,{});
         return json(res, 200, {ok:true, deleted:id});
       }
       if (p === '/api/admin/email-otp/status' && req.method === 'GET') {
@@ -1342,6 +1560,7 @@ const server = http.createServer(async (req, res) => {
         if (!o) return json(res, 404, { error: 'order not found' });
         o.status = b.status; o.status_updated = new Date().toISOString();
         saveOrders(orders);
+        await auditAdmin('admin','UPDATE_ORDER_STATUS','order',b.id,{status:b.status});
         console.log('[admin] order', b.id, '→', b.status);
         return json(res, 200, { ok: true, id: b.id, status: b.status });
       }

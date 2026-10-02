@@ -22,3 +22,9 @@
 .ai-center-card .btn.soft{background:#eef2ff;color:#3730a3}
 .ai-center-card .btn.primary{background:#6366f1}
 .approval-list{display:grid;gap:12px}
+
+.reset-panel{margin-top:14px;padding:14px;border:1px solid var(--line);background:#f8fafc;border-radius:14px}
+.reset-panel h3{margin:0 0 4px;font-size:1rem}
+.reset-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.reset-grid input{width:100%}
+@media(max-width:650px){.reset-grid{grid-template-columns:1fr}}

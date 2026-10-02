@@ -1,5 +1,5 @@
 const $=(s,e=document)=>e.querySelector(s), $$=(s,e=document)=>[...e.querySelectorAll(s)];
-let token=localStorage.getItem('bg_admin')||'',products=[],orders=[],currentView='overview',aiHistory=[];
+let token=localStorage.getItem('bg_admin')||'',products=[],orders=[],customers=[],currentView='overview',aiHistory=[];
 try{aiHistory=JSON.parse(sessionStorage.getItem('bg_ai_history')||'[]');if(!Array.isArray(aiHistory))aiHistory=[];}catch{aiHistory=[]}
 function reportClientError(message){console.error('[dashboard]',message);const el=$('#loginErr');if(el){el.style.color='var(--danger)';el.textContent='Dashboard error: '+String(message||'Unexpected error');}}
 window.addEventListener('error',e=>reportClientError(e.message||'Unexpected client error'));
@@ -18,7 +18,7 @@ async function api(path,opt={}){
   finally{clearTimeout(timer)}
 }
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function money(n){return '₹'+Number(n||0).toLocaleString('en-IN')}
-async function refresh(){products=await api('/api/admin/products');orders=await api('/api/admin/orders')}
+async function refresh(){[products,orders,customers]=await Promise.all([api('/api/admin/products'),api('/api/admin/orders'),api('/api/admin/customers')])}
 function setView(v){currentView=v;$$('.view').forEach(x=>x.classList.toggle('hidden',x.id!==v));$$('.nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.view===v));const t={overview:'Business Overview',products:'Product Management',orders:'Orders',customers:'Customers',suppliers:'Supplier / Dropshipping',research:'AI Product Research',pricing:'Pricing & Offers',marketing:'AI Marketing',seo:'AI SEO Manager',support:'Customer Support',finance:'Finance & Profit',controls:'AI Control Center',security:'Security & Audit',approvals:'Approval Center'};$('#pageTitle').textContent=t[v]||'Business Overview';render()}
 function render(){if(!token)return;if(currentView==='overview')overview();if(currentView==='products')productView();if(currentView==='orders')orderView();if(currentView==='customers')customerView();if(currentView==='suppliers')supplierView();if(currentView==='research')researchView();if(currentView==='pricing')pricingView();if(currentView==='marketing')marketingView();if(currentView==='seo')seoView();if(currentView==='support')supportView();if(currentView==='finance')financeView();if(currentView==='controls')controlsView();if(currentView==='security')securityView();if(currentView==='approvals')approvalView()}
 async function overview(){
@@ -27,6 +27,8 @@ async function overview(){
   const collected=active.filter(o=>o.payment?.paid===true).reduce((s,o)=>s+Number(o.totals?.total_inr||0),0);
   const open=active.filter(o=>!["DELIVERED","CANCELLED"].includes(o.status)).length;
   const aov=active.length?booked/active.length:0;
+  const today=new Date();today.setHours(0,0,0,0);
+  const todaySales=active.filter(o=>new Date(o.created||0)>=today).reduce((s,o)=>s+Number(o.totals?.total_inr||0),0);
   const units={};
   for(const o of active)for(const item of (o.items||[])){
     const qty=Math.max(0,Number(item.qty)||0),p=products.find(x=>x.id===item.id);
@@ -38,77 +40,52 @@ async function overview(){
   const lowStock=products.filter(p=>p.published!==false&&Number(p.stock??0)<=5);
   $("#overview").innerHTML=
     "<div class=\"grid stats\">"+
+      "<div class=\"stat\"><div class=\"label\">Today sales</div><div class=\"value\">"+money(todaySales)+"</div></div>"+
       "<div class=\"stat\"><div class=\"label\">Orders</div><div class=\"value\">"+orders.length+"</div></div>"+
       "<div class=\"stat\"><div class=\"label\">Sales booked</div><div class=\"value\">"+money(booked)+"</div></div>"+
-      "<div class=\"stat\"><div class=\"label\">Collected</div><div class=\"value\">"+money(collected)+"</div></div>"+
       "<div class=\"stat\"><div class=\"label\">AOV</div><div class=\"value\">"+money(aov)+"</div></div>"+
     "</div>"+
     "<div class=\"grid stats\" style=\"margin-top:16px\">"+
+      "<div class=\"stat\"><div class=\"label\">Collected</div><div class=\"value\">"+money(collected)+"</div></div>"+
       "<div class=\"stat\"><div class=\"label\">Open orders</div><div class=\"value\">"+open+"</div></div>"+
-      "<div class=\"stat\"><div class=\"label\">Units sold</div><div class=\"value\">"+Object.values(units).reduce((s,x)=>s+x.units,0)+"</div></div>"+
-      "<div class=\"stat\"><div class=\"label\">Products</div><div class=\"value\">"+products.length+"</div></div>"+
+      "<div class=\"stat\"><div class=\"label\">Customers</div><div class=\"value\">"+customers.length+"</div></div>"+
       "<div class=\"stat\"><div class=\"label\">Low stock</div><div class=\"value\">"+lowStock.length+"</div></div>"+
     "</div>"+
     "<div class=\"section-card\"><div class=\"section-head\"><div><h2>Growth Analytics · Last 7 Days</h2><div class=\"muted\">Tracked storefront events only. No invented traffic.</div></div><button class=\"btn soft\" id=\"refreshAnalytics\">Refresh</button></div>"+
-      "<div id=\"growthGrid\" class=\"grid stats\"><div class=\"notice\">Loading analytics…</div></div>"+
-      "<div id=\"growthTop\" class=\"table-wrap\" style=\"margin-top:14px\"></div>"+
+      "<div id=\"growthGrid\" class=\"grid stats\"><div class=\"notice\">Loading analytics…</div></div><div id=\"growthTop\" class=\"table-wrap\" style=\"margin-top:14px\"></div>"+
     "</div>"+
-    "<div class=\"section-card\"><div class=\"section-head\"><div><h2>Business Analytics</h2><div class=\"muted\">Based only on recorded order/product data.</div></div><span class=\"badge\">No invented metrics</span></div>"+
-      "<div class=\"table-wrap\"><table class=\"tbl\"><thead><tr><th>Top product</th><th>Units</th><th>Booked sales</th></tr></thead><tbody>"+
+    "<div class=\"section-card\"><div class=\"section-head\"><div><h2>AI Activity · Today</h2><div class=\"muted\">Recent AI planning/execution events recorded in Supabase.</div></div><button class=\"btn soft\" id=\"refreshActivity\">Refresh</button></div><div id=\"aiActivity\" class=\"table-wrap\"><div class=\"notice\">Loading activity…</div></div></div>"+
+    "<div class=\"section-card\"><div class=\"section-head\"><div><h2>Top Products</h2><div class=\"muted\">Based on recorded order lines.</div></div><span class=\"badge\">No invented metrics</span></div>"+
+      "<div class=\"table-wrap\"><table class=\"tbl\"><thead><tr><th>Product</th><th>Units</th><th>Booked sales</th></tr></thead><tbody>"+
       (top.length?top.map(x=>"<tr><td>"+esc(x.name)+"</td><td>"+x.units+"</td><td>"+money(x.sales)+"</td></tr>").join(""):"<tr><td colspan=\"3\">No product sales recorded yet.</td></tr>")+
-      "</tbody></table></div>"+
-      "<p class=\"muted\" style=\"margin-bottom:0\">Estimated gross profit is shown in Finance. Gateway fees, taxes, shipping, returns and ad spend are excluded unless recorded.</p>"+
-    "</div>"+
-    "<div class=\"section-card\"><div class=\"section-head\"><div><h2>Operational Readiness</h2><div class=\"muted\">Live connection checks for the admin workspace.</div></div><button class=\"btn soft\" id=\"refreshReadiness\">Refresh</button></div>"+
-      "<div id=\"readinessGrid\" class=\"grid readiness-grid\"><div class=\"notice\">Checking integrations…</div></div>"+
-    "</div>"+
-    "<div class=\"section-card\"><div class=\"section-head\"><h2>Quick actions</h2></div><div class=\"actions\">"+
-      "<button class=\"btn soft\" data-go=\"products\">Add product</button>"+
-      "<button class=\"btn soft\" data-go=\"research\">Research products</button>"+
-      "<button class=\"btn soft\" data-go=\"pricing\">Pricing & offers</button>"+
-      "<button class=\"btn soft\" data-go=\"marketing\">Create campaign</button>"+
-      "<button class=\"btn soft\" data-go=\"finance\">Check profit</button>"+
-      "</div></div>";
-  $("[data-go=\"products\"]").onclick=()=>setView("products");
-  $("[data-go=\"research\"]").onclick=()=>setView("research");
-  $("[data-go=\"pricing\"]").onclick=()=>setView("pricing");
-  $("[data-go=\"marketing\"]").onclick=()=>setView("marketing");
-  $("[data-go=\"finance\"]").onclick=()=>setView("finance");
+      "</tbody></table></div></div>"+
+    "<div class=\"section-card\"><div class=\"section-head\"><div><h2>Operational Readiness</h2><div class=\"muted\">Live connection checks for the admin workspace.</div></div><button class=\"btn soft\" id=\"refreshReadiness\">Refresh</button></div><div id=\"readinessGrid\" class=\"grid readiness-grid\"><div class=\"notice\">Checking integrations…</div></div></div>"+
+    "<div class=\"section-card\"><div class=\"section-head\"><h2>Quick actions</h2></div><div class=\"actions\"><button class=\"btn soft\" data-go=\"products\">Add product</button><button class=\"btn soft\" data-go=\"research\">Research products</button><button class=\"btn soft\" data-go=\"pricing\">Pricing & offers</button><button class=\"btn soft\" data-go=\"marketing\">Create campaign</button><button class=\"btn soft\" data-go=\"finance\">Check profit</button></div></div>";
+  $("[data-go=\"products\"]").onclick=()=>setView("products");$("[data-go=\"research\"]").onclick=()=>setView("research");$("[data-go=\"pricing\"]").onclick=()=>setView("pricing");$("[data-go=\"marketing\"]").onclick=()=>setView("marketing");$("[data-go=\"finance\"]").onclick=()=>setView("finance");
 
   async function analytics(){
-    const grid=$("#growthGrid"),topBox=$("#growthTop");
     try{
       const d=await api("/api/admin/analytics/summary?days=7"),e=d.events||{};
-      const items=[
-        ["Unique sessions",d.unique_sessions||0],
-        ["Product views",e.product_view||0],
-        ["Add to cart",e.add_to_cart||0],
-        ["Checkout starts",e.checkout_start||0],
-        ["Purchase events",e.purchase_success||0]
-      ];
-      grid.innerHTML=items.map(x=>"<div class=\"stat\"><div class=\"label\">"+esc(x[0])+"</div><div class=\"value\">"+x[1]+"</div></div>").join("");
-      const tp=d.top_products||[];
-      topBox.innerHTML=tp.length?("<h3 style=\"margin:0 0 8px\">Most viewed products</h3><table class=\"tbl\"><thead><tr><th>Product</th><th>Views</th></tr></thead><tbody>"+tp.map(x=>"<tr><td>"+esc(x.name)+"</td><td>"+x.views+"</td></tr>").join("")+"</tbody></table>"):"<div class=\"notice\">No product-view events recorded in this period yet.</div>";
-    }catch(e){grid.innerHTML="<div class=\"notice\">Analytics unavailable: "+esc(e.message)+"</div>";topBox.innerHTML=""}
+      const items=[["Unique sessions",d.unique_sessions||0],["Product views",e.product_view||0],["Add to cart",e.add_to_cart||0],["Checkout starts",e.checkout_start||0],["Purchase events",e.purchase_success||0]];
+      $("#growthGrid").innerHTML=items.map(x=>"<div class=\"stat\"><div class=\"label\">"+esc(x[0])+"</div><div class=\"value\">"+x[1]+"</div></div>").join("");
+      const tp=d.top_products||[];$("#growthTop").innerHTML=tp.length?("<h3 style=\"margin:0 0 8px\">Most viewed products</h3><table class=\"tbl\"><thead><tr><th>Product</th><th>Views</th></tr></thead><tbody>"+tp.map(x=>"<tr><td>"+esc(x.name)+"</td><td>"+x.views+"</td></tr>").join("")+"</tbody></table>"):"<div class=\"notice\">No product-view events recorded yet.</div>";
+    }catch(e){$("#growthGrid").innerHTML="<div class=\"notice\">Analytics unavailable: "+esc(e.message)+"</div>";$("#growthTop").innerHTML=""}
   }
-  $("#refreshAnalytics").onclick=analytics; analytics();
-
-  async function readiness(){
-    const box=$("#readinessGrid");if(!box)return;
+  async function activity(){
     try{
-      const d=await api("/api/admin/readiness");
-      const items=[
-        ["AI Manager",d.ai?.configured,d.ai?.liveResearchConfigured?"AI + live research":"AI only"],
-        ["Supabase data",d.persistence?.configured,d.persistence?.configured?"Connected":"Not connected"],
-        ["Password recovery",d.password_recovery?.configured,d.password_recovery?.configured?"Gmail OTP ready":"Needs Gmail SMTP"],
-        ["Razorpay",d.payments?.configured,d.payments?.configured?"Payments ready":"Keys not ready"],
-        ["Shiprocket",d.shipping?.configured,d.shipping?.configured?"Shipping ready":"Not connected"],
-        ["Qikink",d.supplier_qikink?.configured,d.supplier_qikink?.configured?"Supplier API ready":"Not connected"]
-      ];
-      box.innerHTML=items.map(x=>"<div class=\"stat\"><div class=\"label\">"+esc(x[0])+"</div><div class=\"value\" style=\"font-size:1rem\">"+(x[1]?"READY":"SETUP NEEDED")+"</div><div class=\"muted\">"+esc(x[2])+"</div></div>").join("");
-    }catch(e){box.innerHTML="<div class=\"notice\">Readiness check failed: "+esc(e.message)+"</div>"}
+      const rows=await api("/api/admin/agent/logs");
+      const todayStart=Date.now()-86400000,logs=rows.filter(x=>new Date(x.created_at||0).getTime()>=todayStart).slice(0,12);
+      $("#aiActivity").innerHTML=logs.length?'<table class="tbl"><thead><tr><th>Time</th><th>Role</th><th>Activity</th></tr></thead><tbody>'+logs.map(x=>'<tr><td>'+esc(new Date(x.created_at).toLocaleTimeString('en-IN'))+'</td><td>'+esc(x.role||'AI')+'</td><td>'+esc(String(x.message||'').slice(0,180))+'</td></tr>').join('')+'</tbody></table>':'<div class="notice">No AI activity recorded today.</div>';
+    }catch(e){$("#aiActivity").innerHTML='<div class="notice">AI activity unavailable: '+esc(e.message)+'</div>'}
   }
-  $("#refreshReadiness").onclick=readiness; readiness();
+  async function readiness(){
+    try{
+      const d=await api("/api/admin/readiness"),items=[["AI Manager",d.ai?.configured,d.ai?.liveResearchConfigured?"AI + live research":"AI only"],["Supabase data",d.persistence?.configured,d.persistence?.configured?"Connected":"Not connected"],["Password recovery",d.password_recovery?.configured,d.password_recovery?.configured?"Gmail OTP ready":"Needs Gmail SMTP"],["Razorpay",d.payments?.configured,d.payments?.configured?"Payments ready":"Keys not ready"],["Shiprocket",d.shipping?.configured,d.shipping?.configured?"Shipping ready":"Not connected"],["Qikink",d.supplier_qikink?.configured,d.supplier_qikink?.configured?"Supplier API ready":"Not connected"]];
+      $("#readinessGrid").innerHTML=items.map(x=>"<div class=\"stat\"><div class=\"label\">"+esc(x[0])+"</div><div class=\"value\" style=\"font-size:1rem\">"+(x[1]?"READY":"SETUP NEEDED")+"</div><div class=\"muted\">"+esc(x[2])+"</div></div>").join("");
+    }catch(e){$("#readinessGrid").innerHTML="<div class=\"notice\">Readiness check failed: "+esc(e.message)+"</div>"}
+  }
+  $("#refreshAnalytics").onclick=analytics;$("#refreshActivity").onclick=activity;$("#refreshReadiness").onclick=readiness;
+  analytics();activity();readiness();
 }
 function renderAgentActions(actions){
   const box=$('#aiHistory'); if(!box) return;
@@ -261,29 +238,23 @@ async function financeView(){
 }
 async function pricingView(){
   const options=products.map(p=>'<option value="'+esc(p.id)+'">'+esc(p.name)+'</option>').join('');
-  $("#pricing").innerHTML='<div class="section-card"><div class="section-head"><div><h2>Pricing & Offers</h2><div class="muted">Margin-safe simulator. Nothing is changed automatically.</div></div></div><div class="form-grid"><div><label>Product</label><select id="priceProduct">'+options+'</select></div><div><label>Target margin floor (%)</label><input id="targetMargin" type="number" min="0" max="90" value="25"></div><div><label>Extra shipping / handling cost</label><input id="extraCost" type="number" min="0" value="0"></div><div><label>Discount to simulate (%)</label><input id="discountPct" type="number" min="0" max="100" value="0"></div></div><div class="actions" style="margin-top:12px"><button class="btn primary" id="calcPrice">Calculate</button><button class="btn soft" id="aiPrice">Ask AI for pricing draft</button></div><div id="priceOut" class="ai-output">Select a product and calculate.</div></div>';
+  $("#pricing").innerHTML='<div class="section-card"><div class="section-head"><div><h2>Pricing & Offers</h2><div class="muted">Margin-safe simulator. Changes require owner approval.</div></div></div><div class="form-grid"><div><label>Product</label><select id="priceProduct">'+options+'</select></div><div><label>Target margin floor (%)</label><input id="targetMargin" type="number" min="0" max="90" value="25"></div><div><label>Extra shipping / handling cost</label><input id="extraCost" type="number" min="0" value="0"></div><div><label>Discount to simulate (%)</label><input id="discountPct" type="number" min="0" max="100" value="0"></div></div><div class="actions" style="margin-top:12px"><button class="btn primary" id="calcPrice">Calculate</button><button class="btn soft" id="aiPrice">Ask AI for pricing draft</button></div><div id="priceOut" class="ai-output">Select a product and calculate.</div></div><div class="section-card"><div class="section-head"><h2>Offer Manager</h2><button class="btn soft" id="refreshOffers">Refresh</button></div><div class="form-grid"><div><label>Offer name</label><input id="offerName" placeholder="Festival sale"></div><div><label>Code</label><input id="offerCode" placeholder="FESTIVE10"></div><div><label>Discount %</label><input id="offerValue" type="number" min="0" max="100" value="10"></div><div><label>Minimum order ₹</label><input id="offerMin" type="number" min="0" value="0"></div></div><div class="actions" style="margin-top:10px"><button class="btn primary" id="createOffer">Create offer</button></div><div id="offerList" style="margin-top:14px">Loading offers…</div></div>';
   const calc=()=>{
-    const p=products.find(x=>x.id===$("#priceProduct").value),out=$("#priceOut");
-    if(!p){out.textContent='No product selected.';return}
-    const cost=Number(p.supplier_cost_inr||0)+Math.max(0,Number($("#extraCost").value)||0);
-    const margin=Math.max(0,Math.min(90,Number($("#targetMargin").value)||0))/100;
-    const discount=Math.max(0,Math.min(100,Number($("#discountPct").value)||0))/100;
-    const floor=cost/(1-margin);
-    const list=floor/(1-discount||1);
-    const discounted=list*(1-discount);
-    const actual=discounted?((discounted-cost)/discounted)*100:0;
-    out.textContent='Recorded supplier cost: '+money(cost)+'\\nMinimum price at margin floor: '+money(floor)+'\\nSuggested list price to absorb simulated discount: '+money(list)+'\\nDiscounted selling price: '+money(discounted)+'\\nResulting gross margin: '+actual.toFixed(1)+'%\\n\\nNo gateway fees, taxes, returns, shipping or ads are included unless entered.';
+    const p=products.find(x=>x.id===$("#priceProduct").value),out=$("#priceOut");if(!p){out.textContent='No product selected.';return}
+    const cost=Number(p.supplier_cost_inr||0)+Math.max(0,Number($("#extraCost").value)||0),margin=Math.max(0,Math.min(90,Number($("#targetMargin").value)||0))/100,discount=Math.max(0,Math.min(99,Number($("#discountPct").value)||0))/100;
+    const floor=margin<1?cost/(1-margin):cost,list=discount<1?floor/(1-discount):0,discounted=list*(1-discount),actual=discounted?((discounted-cost)/discounted)*100:0;
+    out.textContent='Recorded supplier cost: '+money(cost)+'\\nMinimum price at margin floor: '+money(floor)+'\\nSuggested list price: '+money(list)+'\\nDiscounted selling price: '+money(discounted)+'\\nResulting gross margin: '+actual.toFixed(1)+'%\\n\\nGateway fees, taxes, returns and ad spend are excluded.';
   };
   $("#calcPrice").onclick=calc;
-  $("#aiPrice").onclick=async()=>{
-    const p=products.find(x=>x.id===$("#priceProduct").value),out=$("#priceOut");
-    if(!p)return;
-    out.textContent='AI is preparing a pricing draft…';
+  $("#aiPrice").onclick=async()=>{const p=products.find(x=>x.id===$("#priceProduct").value),out=$("#priceOut");if(!p)return;out.textContent='AI is preparing a pricing draft…';try{const d=await api('/api/ai/chat',{method:'POST',body:{message:'Create a pricing and offer draft for this actual product. Respect the configured margin floor. Do not change the product.',task:'pricing',context:{product:p}}});out.textContent=d.reply||'No pricing draft returned.'}catch(e){out.textContent='AI pricing unavailable: '+e.message}};
+  async function offers(){
     try{
-      const d=await api('/api/ai/chat',{method:'POST',body:{message:'Create a pricing and offer draft for this actual product. Respect a 25% minimum gross margin and clearly label every assumption. Do not change the product.',task:'pricing',context:{product:p}}});
-      out.textContent=d.reply||'No pricing draft returned.';
-    }catch(e){out.textContent='AI pricing unavailable: '+e.message}
-  };
+      const rows=await api('/api/admin/offers');
+      $("#offerList").innerHTML=rows.length?'<table class="tbl"><thead><tr><th>Offer</th><th>Discount</th><th>Status</th></tr></thead><tbody>'+rows.map(o=>'<tr><td><strong>'+esc(o.name)+'</strong><br><span class="muted">'+esc(o.code||'No code')+'</span></td><td>'+Number(o.discount_value).toFixed(0)+'%</td><td>'+ (o.active?'ACTIVE':'DRAFT')+'</td></tr>').join('')+'</tbody></table>':'<div class="notice">No offers created yet.</div>';
+    }catch(e){$("#offerList").innerHTML='<div class="notice">Offer data unavailable: '+esc(e.message)+'</div>'}
+  }
+  $("#createOffer").onclick=async()=>{const b={name:$("#offerName").value.trim()||'Untitled offer',code:$("#offerCode").value.trim(),discount_type:'PERCENT',discount_value:Number($("#offerValue").value||0),min_order_inr:Number($("#offerMin").value||0),active:false};try{await api('/api/admin/offers',{method:'POST',body:b});await offers()}catch(e){alert(e.message)}};
+  $("#refreshOffers").onclick=offers; offers();
 }
 async function controlsView(){
   const box=$("#controls");

@@ -19,8 +19,8 @@ async function api(path,opt={}){
 }
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function money(n){return '₹'+Number(n||0).toLocaleString('en-IN')}
 async function refresh(){[products,orders,customers]=await Promise.all([api('/api/admin/products'),api('/api/admin/orders'),api('/api/admin/customers')])}
-function setView(v){currentView=v;$$('.view').forEach(x=>x.classList.toggle('hidden',x.id!==v));$$('.nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.view===v));const t={overview:'Business Overview',products:'Product Management',orders:'Orders',customers:'Customers',suppliers:'Supplier / Dropshipping',research:'AI Product Research',pricing:'Pricing & Offers',marketing:'AI Marketing',seo:'AI SEO Manager',support:'Customer Support',finance:'Finance & Profit',controls:'AI Control Center',security:'Security & Audit',approvals:'Approval Center'};$('#pageTitle').textContent=t[v]||'Business Overview';render()}
-function render(){if(!token)return;if(currentView==='overview')overview();if(currentView==='products')productView();if(currentView==='orders')orderView();if(currentView==='customers')customerView();if(currentView==='suppliers')supplierView();if(currentView==='research')researchView();if(currentView==='pricing')pricingView();if(currentView==='marketing')marketingView();if(currentView==='seo')seoView();if(currentView==='support')supportView();if(currentView==='finance')financeView();if(currentView==='controls')controlsView();if(currentView==='security')securityView();if(currentView==='approvals')approvalView()}
+function setView(v){currentView=v;$$('.view').forEach(x=>x.classList.toggle('hidden',x.id!==v));$$('.nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.view===v));const t={overview:'Business Overview',products:'Product Management',orders:'Orders',customers:'Customers',suppliers:'Supplier / Dropshipping',research:'AI Product Research',pricing:'Pricing & Offers',marketing:'AI Marketing',seo:'AI SEO Manager',support:'Customer Support',finance:'Finance & Profit',controls:'AI Control Center',quality:'AI Training & Quality',security:'Security & Audit',approvals:'Approval Center'};$('#pageTitle').textContent=t[v]||'Business Overview';render()}
+function render(){if(!token)return;if(currentView==='overview')overview();if(currentView==='products')productView();if(currentView==='orders')orderView();if(currentView==='customers')customerView();if(currentView==='suppliers')supplierView();if(currentView==='research')researchView();if(currentView==='pricing')pricingView();if(currentView==='marketing')marketingView();if(currentView==='seo')seoView();if(currentView==='support')supportView();if(currentView==='finance')financeView();if(currentView==='controls')controlsView();if(currentView==='quality')qualityView();if(currentView==='security')securityView();if(currentView==='approvals')approvalView()}
 async function overview(){
   const active=orders.filter(o=>o.status!=="CANCELLED");
   const booked=active.reduce((s,o)=>s+Number(o.totals?.total_inr||0),0);
@@ -266,6 +266,28 @@ async function controlsView(){
   }
   await load();
 }
+async function qualityView(){
+  const box=$("#quality");
+  box.innerHTML='<div class="section-card"><div class="section-head"><div><h2>AI Training & Quality Center</h2><div class="muted">Training scenarios, coverage, guardrails and release readiness.</div></div><button class="btn soft" id="refreshQuality">Refresh</button></div><div id="qualityStats" class="grid stats">Loading…</div><div id="qualityCoverage" class="table-wrap" style="margin-top:14px">Loading…</div></div><div class="section-card"><h2>Operating rules</h2><div class="muted">Facts stay in knowledge/data; hard limits stay in backend code; model changes require evaluation first.</div><div class="notice" style="margin-top:12px">Target: 150–200 evaluation scenarios before wider autonomy. Current seed set is a starting point, not a production certification.</div></div>';
+  async function load(){
+    try{
+      const d=await api('/api/admin/ai/quality');
+      const q=d.quality_targets||{};
+      const n=Number(d.training_seed_count||0);
+      const targetOk=n>=150;
+      $("#qualityStats").innerHTML=[
+        ['Training seed',n+' scenarios',targetOk?'READY':'BUILDING'],
+        ['Policy accuracy target',Number(q.target_policy_accuracy_pct||95)+'%','TARGET'],
+        ['Hard-limit violations','0 allowed','REQUIRED'],
+        ['Prompt-injection tests',q.prompt_injection_tests_required?'Required':'Not configured','REQUIRED']
+      ].map(x=>'<div class="stat"><div class="label">'+esc(x[0])+'</div><div class="value" style="font-size:1rem">'+esc(x[1])+'</div><div class="muted">'+esc(x[2])+'</div></div>').join('');
+      const entries=Object.entries(d.coverage||{}).sort((a,b)=>b[1]-a[1]);
+      $("#qualityCoverage").innerHTML=entries.length?'<table class="tbl"><thead><tr><th>Scenario category</th><th>Count</th></tr></thead><tbody>'+entries.map(x=>'<tr><td>'+esc(x[0])+'</td><td>'+esc(x[1])+'</td></tr>').join('')+'</tbody></table>':'<div class="notice">No training scenarios found.</div>';
+    }catch(e){$("#qualityStats").innerHTML='<div class="notice">'+esc(e.message)+'</div>'}
+  }
+  $("#refreshQuality").onclick=load; await load();
+}
+
 async function securityView(){
   const box=$("#security");
   box.innerHTML='<div class="section-card"><div class="section-head"><div><h2>Security & Audit</h2><div class="muted">Role-based access, email 2FA and integration readiness.</div></div><button class="btn soft" id="refreshSecurity">Refresh</button></div><div id="securityReadiness" class="grid readiness-grid">Loading…</div></div><div class="section-card"><div class="section-head"><h2>Admin users</h2><button class="btn soft" id="refreshUsers">Refresh</button></div><div class="form-grid"><input id="newAdminUser" placeholder="Username"><input id="newAdminEmail" type="email" placeholder="Email"><select id="newAdminRole"><option>manager</option><option>support</option><option>finance</option><option>marketing</option></select></div><button class="btn primary" id="addAdminUser" style="margin-top:10px">Add user</button><div id="adminUsers" class="table-wrap" style="margin-top:12px">Loading…</div></div><div class="section-card"><h2>Recent audit events</h2><div id="auditList">Loading…</div></div>';

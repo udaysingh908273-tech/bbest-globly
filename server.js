@@ -1201,7 +1201,7 @@ async function agentCommand(command) {
     'For set_site_config, payload may include hero and theme fields only.',
     'For set_order_status, payload must include id and status.',
     'For create_offer, payload may include id, code, name, discount_type, discount_value, min_order_inr, max_uses, starts_at, ends_at, active. For create_customer_offer, use ONLY a customer_id from customer_marketing_intelligence with marketing_opt_in=true, include product_id when a specific product is being offered, and include name, discount_type and discount_value.',
-    'For create_campaign/run_ad_campaign/publish_campaign, include name, channel, objective, budget_inr, starts_at, ends_at, product_ids and creative. Paid execution and publication always require owner approval and must not be claimed as live without a connected executor.'
+    'For create_campaign/run_ad_campaign/publish_campaign, include name, channel, objective, budget_inr, starts_at, ends_at, product_ids and creative. Paid execution and publication always require owner approval and must not be claimed as live without a connected executor.',
     'Clearly separate REAL DATA, CALCULATED METRICS, AI ANALYSIS, AI RECOMMENDATION, CONFIDENCE and NEEDS OWNER APPROVAL.'
   ].join(' ') + '\nCONSTITUTION:\n' + JSON.stringify(constitution) + '\nSTRATEGY:\n' + JSON.stringify(strategy);
   const raw=await callAI([

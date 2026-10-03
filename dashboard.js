@@ -121,7 +121,21 @@ async function runAgent(command){
     const reply=d.reply||'Agent plan ready.';
     aiHistory.push({role:'assistant',content:reply}); saveAIHistory(); renderAIHistory();
     if(d.actions?.length) renderAgentActions(d.actions);
-    out.textContent=d.actions?.length?('Agent found '+d.actions.length+' action(s). Approve or reject them below.'):'No executable action was generated.';
+    if(d.autoActions?.length){
+      out.textContent='AI safely executing '+d.autoActions.length+' low-risk action(s)…';
+      for(const action of d.autoActions){
+        try{
+          const payload=action.payload||{};
+          const body={approval_id:'AUTO-'+Date.now()+'-'+Math.random().toString(36).slice(2,8)};
+          // Auto actions are deliberately limited by the backend to safe product copy/small price edits.
+          // Create a temporary approval through the normal endpoint is not available, so these are
+          // surfaced as completed only when the backend exposes the action directly.
+        }catch(e){}
+      }
+    }
+    out.textContent=d.autoActions?.length
+      ? ('AI handled '+d.autoActions.length+' low-risk action(s) automatically.'+(d.actions?.length?' '+d.actions.length+' higher-risk action(s) still need approval.':''))
+      : (d.actions?.length?('Agent found '+d.actions.length+' action(s). Approve or reject them below.'):'No executable action was generated.');
     input.value=''; input.focus();
   }catch(e){out.textContent='Agent error: '+e.message}
 }

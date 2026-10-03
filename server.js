@@ -2185,7 +2185,7 @@ const server = http.createServer(async (req, res) => {
           shipping:{configured:!!(SHIPROCKET_EMAIL&&SHIPROCKET_PASSWORD&&SHIPROCKET_PICKUP_LOCATION),auto_fulfill:SHIPROCKET_AUTO_FULFILL},
           supplier_qikink:{configured:qikinkReady,auto_fulfill:QIKINK_AUTO_FULFILL},
           suppliers:{configured:supabaseReady,registry:true},
-          notifications:{whatsapp:!!WHATSAPP_TOKEN&&!!WHATSAPP_PHONE_NUMBER_ID,sms:!!TWILIO_ACCOUNT_SID,email:gmailOtpReady},
+          notifications:{whatsapp:!!WHATSAPP_TOKEN&&!!WHATSAPP_PHONE_NUMBER_ID,sms:!!TWILIO_ACCOUNT_SID,email:gmailOtpReady},customer_auth:{otp:!!(TWILIO_ACCOUNT_SID&&TWILIO_AUTH_TOKEN&&TWILIO_OTP_FROM&&supabaseReady),profile_persistence:supabaseReady},marketing:{email:gmailMailerReady,whatsapp_template:!!(WHATSAPP_TOKEN&&WHATSAPP_PHONE_NUMBER_ID&&WHATSAPP_GRAPH_VERSION&&WHATSAPP_MARKETING_TEMPLATE_NAME),sms:!!TWILIO_ACCOUNT_SID,audience_intelligence:supabaseReady,approval_gated:true},
           refunds:{razorpay:RZP_REFUND_READY},
           research:{configured:!!(RESEARCH_API_URL&&RESEARCH_API_KEY),snapshots:true},
           ads:{configured:!!(AD_SPEND_API_URL&&AD_SPEND_API_KEY),campaign_store:true},

@@ -1220,15 +1220,16 @@ async function agentCommand(command) {
     }
   }
   let stored = [];
-  if (planned.length) {
-    stored = await createAgentApprovals(planned);
-  }
+  let storedAuto = [];
+  if (planned.length) stored = await createAgentApprovals(planned);
+  if (autoPlanned.length) storedAuto = await createAgentApprovals(autoPlanned);
   const actions = planned.map((a,i)=>({...a,approvalId:stored[i]?.id || null}));
+  const autoActions = autoPlanned.map((a,i)=>({...a,approvalId:storedAuto[i]?.id || null}));
   const result = {
     configured:true,
     reply:String(parsed.reply||'Agent plan ready.'),
     actions,
-    autoActions:autoPlanned
+    autoActions
   };
   await logAgent('owner', command, result);
   return result;

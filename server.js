@@ -2540,7 +2540,16 @@ const server = http.createServer(async (req, res) => {
           customers: readJSON('customers.json', []).length
         });
       }
-      if (p === '/api/admin/marketing/audience' && req.method === 'GET') {
+      if (p === '/api/admin/marketing/messages' && req.method === 'GET') {
+  if(!supabaseReady)return json(res,200,[]);try{const rows=await supabaseRequest('marketing_messages?select=*&order=created_at.desc&limit=200');return json(res,200,Array.isArray(rows)?rows:[])}catch(e){return json(res,502,{error:e.message})}
+}
+if (p === '/api/admin/marketing/rules' && req.method === 'GET') {
+  if(!supabaseReady)return json(res,200,[]);try{const rows=await supabaseRequest('marketing_automation_rules?select=*&order=created_at.asc');return json(res,200,Array.isArray(rows)?rows:[])}catch(e){return json(res,502,{error:e.message})}
+}
+if (p.startsWith('/api/admin/marketing/rules/') && req.method === 'PATCH') {
+  const id=decodeURIComponent(p.slice('/api/admin/marketing/rules/'.length));if(!supabaseReady)return json(res,503,{error:'Supabase required'});const b=await readBody(req);const patch={};if(typeof b.enabled==='boolean')patch.enabled=b.enabled;if(typeof b.require_approval==='boolean')patch.require_approval=b.require_approval;if(Number.isFinite(Number(b.cooldown_days)))patch.cooldown_days=Math.max(1,Math.floor(Number(b.cooldown_days)));patch.updated_at=new Date().toISOString();try{await supabaseRequest('marketing_automation_rules?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify(patch)});return json(res,200,{ok:true,id,...patch});}catch(e){return json(res,400,{error:e.message})}
+}
+if (p === '/api/admin/marketing/audience' && req.method === 'GET') {
   try{const intel=await buildCustomerMarketingIntelligence(Number(url.searchParams.get('days')||30)),segment=String(url.searchParams.get('segment')||'').toUpperCase(),channel=String(url.searchParams.get('channel')||'').toLowerCase();let audience=(intel.customers||[]).filter(x=>!segment||x.lifecycle_segment===segment).filter(x=>channel==='whatsapp'?x.marketing_whatsapp_opt_in&&x.phone_verified:channel==='sms'?x.marketing_sms_opt_in&&x.phone_verified:channel==='email'?x.marketing_email_opt_in&&!!x.email:x.marketing_opt_in);return json(res,200,{period_days:intel.period_days,segment:segment||'ALL',channel:channel||'ANY',count:audience.length,audience:audience.slice(0,500),segments:intel.segments,consent_coverage:intel.consent_coverage});}catch(e){return json(res,502,{error:e.message})}
 }
 if (p === '/api/admin/marketing/seasonal-plan' && req.method === 'POST') {

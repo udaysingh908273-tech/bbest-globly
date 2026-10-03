@@ -1652,6 +1652,7 @@ const server = http.createServer(async (req, res) => {
       const b=await readBody(req),customers=readJSON('customers.json',[]),c=customers.find(x=>x.id===a.session.customerId);if(!c)return json(res,404,{error:'account not found'});
       const name=String(b.name??c.name??'').trim().slice(0,80),email=String(b.email??c.email??'').trim().toLowerCase();
       if(name&&name!=='Customer'&&name.length<2)return json(res,400,{error:'Name is too short'});
+      if(!email&&(!c.email||!String(c.email).trim()))return json(res,400,{error:'Email is required to complete this customer account'});
       if(email&&!/^\S+@\S+\.\S+$/.test(email))return json(res,400,{error:'Invalid email address'});
       if(email&&customers.some(x=>x.id!==c.id&&x.email===email))return json(res,409,{error:'This email is already linked to another account'});
       if(name)c.name=name;if(b.email!==undefined)c.email=email||null;

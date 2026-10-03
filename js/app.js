@@ -67,6 +67,7 @@ async function checkout(){
     const place=$('#place');place.disabled=true;place.textContent=b.payment_method==='online'?'Creating secure payment…':'Placing order…';
     try{
       const d=await api('/api/orders',{method:'POST',body:b});
+      localStorage.setItem('bg_last_order_phone',b.phone);
       if(b.payment_method!=='online'){trackEvent('purchase_success',{order_id:d.orderId});state.cart=[];saveCart();return nav('/order/'+d.orderId)}
       const gateway=await api('/api/payment/order',{method:'POST',body:{orderId:d.orderId}});
       await loadRazorpay();
@@ -78,9 +79,49 @@ async function checkout(){
   };
 }
 
-async function order(id){meta('Order '+id+' — BBest Globly');$('#app').innerHTML='<section class="page"><p class="empty">Loading order…</p></section>';try{const o=await api('/api/order/'+id);const ship=o.shiprocket_awb?'<p><strong>AWB:</strong> '+esc(o.shiprocket_awb)+(o.shiprocket_courier?' · '+esc(o.shiprocket_courier):'')+'</p><p><span class="status-pill">'+esc(o.shipping_status||'SHIPPING')+'</span></p>':'<p class="muted">Shipment tracking will appear after dispatch.</p>';$('#app').innerHTML='<section class="page"><div class="success-box"><h1>Order placed 🎉</h1><p>Your order ID</p><div class="order-id">'+esc(o.id)+'</div><p><span class="status-pill">'+esc(o.status)+'</span></p><p>Total: <strong>₹'+Number(o.totals.total_inr).toLocaleString('en-IN')+'</strong></p>'+ship+'<a class="btn btn-primary" href="/track">Track order</a>'+(state.token&&['DELIVERED','CONFIRMED'].includes(o.status)?'<button id="returnOrderBtn" class="btn btn-outline" style="margin-left:8px">Request return</button>':'')+'</div></section>';if($('#returnOrderBtn'))$('#returnOrderBtn').onclick=async()=>{const reason=prompt('Reason for return?');if(reason===null)return;try{const d=await api('/api/orders/return',{method:'POST',auth:'user',body:{order_id:o.id,reason}});toast('Return request created: '+d.id)}catch(e){alert(e.message)}}}catch(e){notFound()}}
-async function track(){meta('Track Order — BBest Globly');$('#app').innerHTML='<section class="page"><div class="auth-card"><h1>Track your order</h1><p class="sub">Enter your BBest Globly order ID.</p><div class="field"><label>Order ID</label><input id="oid" placeholder="BG-..."></div><p id="terr" class="form-err"></p><button id="tb" class="btn btn-primary btn-block">Track</button></div></section>';$('#tb').onclick=async()=>{const id=$('#oid').value.trim();if(!id){$('#terr').textContent='Enter your order ID.';return}try{const o=await api('/api/order/'+encodeURIComponent(id));const ship=o.shiprocket_awb?'<p><strong>AWB:</strong> '+esc(o.shiprocket_awb)+(o.shiprocket_courier?' · '+esc(o.shiprocket_courier):'')+'</p><p><span class="status-pill">'+esc(o.shipping_status||'Shipping')+'</span></p>':'<p class="muted">Shipment details will appear after dispatch.</p>';$('#app').innerHTML='<section class="page"><div class="success-box"><h1>Order '+esc(o.id)+'</h1><p><span class="status-pill">'+esc(o.status)+'</span></p><p>Total ₹'+Number(o.totals.total_inr).toLocaleString('en-IN')+'</p>'+ship+'</div></section>'}catch(e){$('#terr').textContent=e.message}}}
-function login(){authForm(false)}
+async function order(id){
+  meta('Order '+id+' — BBest Globly');
+  $('#app').innerHTML='<section class="page"><p class="empty">Loading order…</p></section>';
+  try{
+    const phone=localStorage.getItem('bg_last_order_phone')||'';
+    const o=await api('/api/order/'+encodeURIComponent(id)+(state.token?'':'?phone='+encodeURIComponent(phone)));
+    const ship=o.shiprocket_awb?'<p><strong>AWB:</strong> '+esc(o.shiprocket_awb)+(o.shiprocket_courier?' · '+esc(o.shiprocket_courier):'')+'</p><p><span class="status-pill">'+esc(o.shipping_status||'SHIPPING')+'</span></p>':'<p class="muted">Shipment tracking will appear after dispatch.</p>';
+    const codPending=o.payment?.method==='COD'&&o.payment?.cod_confirmation_status==='PENDING';
+    const codUi=codPending?'<div class="notice" style="margin:14px 0">This is a Cash on Delivery order. Please confirm it before fulfillment.<div class="actions" style="margin-top:10px"><button id="confirmCod" class="btn btn-primary">Confirm COD order</button><button id="declineCod" class="btn btn-outline">Decline</button></div><p id="codMsg" class="muted"></p></div>':'';
+    $('#app').innerHTML='<section class="page"><div class="success-box"><h1>Order placed 🎉</h1><p>Your order ID</p><div class="order-id">'+esc(o.id)+'</div><p><span class="status-pill">'+esc(o.status)+'</span></p><p>Total: <strong>₹'+Number(o.total_inr||0).toLocaleString('en-IN')+'</strong></p>'+ship+codUi+'<a class="btn btn-primary" href="/track">Track order</a>'+(state.token&&['DELIVERED','CONFIRMED'].includes(o.status)?'<div id="reviewBox" style="margin-top:14px"></div>':'')+'</div></section>';
+    const setCod=async(confirm)=>{
+      const msg=$('#codMsg');try{
+        const d=await api('/api/order/'+encodeURIComponent(o.id)+'/cod-confirm',{method:'POST',body:{confirm,phone:state.token?'':phone}});
+        msg.textContent=confirm?'COD order confirmed.':'COD order declined.';$('#confirmCod')?.remove();$('#declineCod')?.remove();
+      }catch(e){msg.textContent=e.message}
+    };
+    $('#confirmCod')?.addEventListener('click',()=>setCod(true));$('#declineCod')?.addEventListener('click',()=>setCod(false));
+    if($('#reviewBox')&&state.token){
+      const delivered=o.status==='DELIVERED',items=(o.items||[]).filter(Boolean);
+      $('#reviewBox').innerHTML=delivered?'<h3>Share a review</h3>'+items.map(i=>'<div class="review-form" data-p="'+esc(i.id)+'"><strong>'+esc(i.name)+'</strong><div class="field"><label>Rating</label><select class="review-rating"><option value="5">5 — Great</option><option value="4">4 — Good</option><option value="3">3 — Okay</option><option value="2">2 — Needs work</option><option value="1">1 — Poor</option></select></div><textarea class="review-text" rows="2" placeholder="Tell us about your experience"></textarea><button class="btn btn-outline review-submit">Submit review</button><span class="muted review-msg"></span></div>').join(''):'';
+      $$('.review-submit',$('#reviewBox')).forEach(btn=>btn.onclick=async()=>{
+        const box=btn.closest('.review-form');btn.disabled=true;
+        try{await api('/api/orders/review',{method:'POST',auth:'user',body:{order_id:o.id,product_id:box.dataset.p,rating:box.querySelector('.review-rating').value,review:box.querySelector('.review-text').value}});box.querySelector('.review-msg').textContent='Review submitted for moderation.'}
+        catch(e){box.querySelector('.review-msg').textContent=e.message;btn.disabled=false}
+      });
+    }
+  }catch(e){notFound()}
+}async function track(){
+  meta('Track Order — BBest Globly');
+  $('#app').innerHTML='<section class="page"><div class="auth-card"><h1>Track your order</h1><p class="sub">Enter your order ID and the phone number used at checkout.</p><div class="field"><label>Order ID</label><input id="oid" placeholder="BG-..."></div><div class="field"><label>Phone number</label><input id="oph" inputmode="tel" autocomplete="tel" placeholder="10-digit phone"></div><p id="terr" class="form-err"></p><button id="tb" class="btn btn-primary btn-block">Track</button></div></section>';
+  $('#tb').onclick=async()=>{
+    const id=$('#oid').value.trim(),phone=$('#oph').value.replace(/\D/g,'');
+    const err=$('#terr');err.textContent='';
+    if(!id||phone.length!==10){err.textContent='Enter a valid order ID and 10-digit phone number.';return}
+    try{
+      localStorage.setItem('bg_last_order_phone',phone);
+      const o=await api('/api/order/'+encodeURIComponent(id)+'?phone='+encodeURIComponent(phone));
+      const ship=o.shiprocket_awb?'<p><strong>AWB:</strong> '+esc(o.shiprocket_awb)+(o.shiprocket_courier?' · '+esc(o.shiprocket_courier):'')+'</p><p><span class="status-pill">'+esc(o.shipping_status||'Shipping')+'</span></p>':'<p class="muted">Shipment details will appear after dispatch.</p>';
+      const cod=o.payment?.method==='COD'?'<p class="muted">COD confirmation: '+esc(o.payment?.cod_confirmation_status||'PENDING')+'</p>':'';
+      $('#app').innerHTML='<section class="page"><div class="success-box"><h1>Order '+esc(o.id)+'</h1><p><span class="status-pill">'+esc(o.status)+'</span></p><p>Total ₹'+Number(o.total_inr||0).toLocaleString('en-IN')+'</p>'+ship+cod+'</div></section>';
+    }catch(e){err.textContent=e.message}
+  };
+}function login(){authForm(false)}
 function register(){authForm(true)}
 function authForm(reg){meta(reg?'Create Account — BBest Globly':'Login — BBest Globly');$('#app').innerHTML='<section class="page"><div class="auth-card"><h1>'+(reg?'Create your account':'Welcome back')+'</h1><p class="sub">'+(reg?'Track orders and checkout faster.':'Log in to your BBest Globly account.')+'</p>'+(reg?'<div class="field"><label>Name</label><input id="nm"></div>':'')+(reg?'<div class="field"><label>Phone</label><input id="ph"></div>':'')+'<div class="field"><label>Email</label><input id="em" type="email"></div><div class="field"><label>Password</label><input id="pw" type="password"></div><p id="aerr" class="form-err"></p><button id="ab" class="btn btn-primary btn-block">'+(reg?'Create account':'Login')+'</button><p class="auth-link">'+(reg?'Already have an account? <a href="/login">Login</a>':'New here? <a href="/register">Create an account</a>')+'</p></div></section>';if(!reg){const fb=document.createElement('button');fb.id='forgotCustomer';fb.type='button';fb.className='btn btn-outline btn-block';fb.style.marginTop='10px';fb.textContent='Forgot password? Email OTP';$('#ab').insertAdjacentElement('afterend',fb)}
 $('#ab').onclick=async()=>{try{const body=reg?{name:$('#nm').value,phone:$('#ph').value,email:$('#em').value,password:$('#pw').value}:{email:$('#em').value,password:$('#pw').value};const d=await api(reg?'/api/auth/register':'/api/auth/login',{method:'POST',body});state.token=d.token;state.user=d.customer;localStorage.setItem('bg_token',state.token);nav('/account')}catch(e){$('#aerr').textContent=e.message}}}

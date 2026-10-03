@@ -1084,14 +1084,81 @@ function buildCustomerSupportKnowledge(){
 }
 
 async function buildCustomerMarketingIntelligence(days=30){
-  if(!supabaseReady)return {customers:[],note:'Supabase is required for customer intent analytics.'};
-  const since=new Date(Date.now()-Math.max(1,Number(days||30))*86400000).toISOString();
+  if(!supabaseReady)return {customers:[],segments:{},consent_coverage:{},note:'Supabase is required for customer intent analytics.'};
+  const periodDays=Math.max(1,Math.min(90,Number(days||30)));
+  const since=new Date(Date.now()-periodDays*86400000).toISOString();
   const rows=await supabaseRequest('analytics_events?select=customer_id,event_name,product_id,metadata,created_at&customer_id=not.is.null&created_at=gte.'+encodeURIComponent(since)+'&order=created_at.desc&limit=5000');
   const customers=readJSON('customers.json',[]),products=loadCatalog(),orders=loadOrders(),byCustomer={};
-  for(const ev of(Array.isArray(rows)?rows:[])){const cid=String(ev.customer_id||'');if(!cid)continue;const x=byCustomer[cid]||(byCustomer[cid]={customer_id:cid,event_count:0,last_seen_at:null,product_scores:{},searches:[],add_to_cart:0,checkouts:0,views:0});x.event_count++;if(!x.last_seen_at||new Date(ev.created_at)>new Date(x.last_seen_at))x.last_seen_at=ev.created_at;if(ev.event_name==='product_view')x.views++;if(ev.event_name==='add_to_cart')x.add_to_cart++;if(ev.event_name==='checkout_start')x.checkouts++;const pid=String(ev.product_id||'');if(pid){const score={purchase_success:5,checkout_start:4,add_to_cart:3,product_view:1}[ev.event_name]||0;x.product_scores[pid]=(x.product_scores[pid]||0)+score}if(ev.event_name==='product_search'){const q=String(ev.metadata?.query||'').trim().slice(0,120);if(q)x.searches.push(q);}}
-  const spendValues=customers.map(c=>orders.filter(o=>o.customer_id===c.id&&o.status!=='CANCELLED').reduce((s,o)=>s+Number(o.totals?.total_inr||0),0)).filter(x=>x>0).sort((a,b)=>a-b),q75=spendValues.length?spendValues[Math.floor((spendValues.length-1)*0.75)]:0,output=[];
-  for(const profile of customers){const x=byCustomer[profile.id]||{customer_id:profile.id,event_count:0,last_seen_at:profile.last_seen_at||null,product_scores:{},searches:[],add_to_cart:0,checkouts:0,views:0};const mine=orders.filter(o=>o.customer_id===profile.id||(o.customer?.email&&profile.email&&String(o.customer.email).toLowerCase()===String(profile.email).toLowerCase())),validOrders=mine.filter(o=>o.status!=='CANCELLED'),spend=validOrders.reduce((n,o)=>n+Number(o.totals?.total_inr||0),0),lastOrder=validOrders.map(o=>o.created).sort().slice(-1)[0]||null,lastSeen=x.last_seen_at||profile.last_seen_at||profile.last_login_at||profile.created||null,recencyDays=lastOrder?Math.max(0,Math.floor((Date.now()-new Date(lastOrder).getTime())/86400000)):null,activeDays=lastSeen?Math.max(0,Math.floor((Date.now()-new Date(lastSeen).getTime())/86400000)):null,top=Object.entries(x.product_scores).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([pid,score])=>{const p=products.find(z=>z.id===pid);return p?{product_id:pid,name:p.name,category:p.category,score,price_inr:Number(p.price_inr||0)}:null}).filter(Boolean),intentScore=Object.values(x.product_scores).reduce((n,v)=>n+Number(v||0),0);let segment='NO_PURCHASE';if(validOrders.length===0&&intentScore>=8)segment='HIGH_INTENT';else if(validOrders.length===0&&activeDays!==null&&activeDays<=7)segment='NEW';else if(validOrders.length>=2&&recencyDays!==null&&recencyDays<=45)segment='LOYAL';else if(spendValues.length&&spend>=q75&&q75>0)segment='HIGH_VALUE';else if(recencyDays!==null&&recencyDays>=91)segment='DORMANT';else if(recencyDays!==null&&recencyDays>=46)segment='AT_RISK';else if(validOrders.length>0)segment='ACTIVE';const avgOrderValue=validOrders.length?spend/validOrders.length:0;const lastOrderDays=lastOrder?Math.max(0,Math.floor((Date.now()-new Date(lastOrder).getTime())/86400000)):null;let nextBestAction='Observe';if(segment==='HIGH_INTENT')nextBestAction='Product-help follow-up';else if(segment==='NEW')nextBestAction='Welcome + category guidance';else if(segment==='LOYAL')nextBestAction='Cross-sell / loyalty';else if(segment==='HIGH_VALUE')nextBestAction='VIP retention / relevant new arrivals';else if(segment==='AT_RISK')nextBestAction='Win-back with relevant value';else if(segment==='DORMANT')nextBestAction='Reactivation campaign';else if(segment==='ACTIVE')nextBestAction='Cross-sell based on interest';output.push({customer_id:profile.id,name:profile.name||'',email:profile.email||'',phone:profile.phone||'',phone_verified:!!profile.phone_verified_at,marketing_opt_in:profile.marketing_opt_in===true,marketing_email_opt_in:profile.marketing_email_opt_in===true,marketing_sms_opt_in:profile.marketing_sms_opt_in===true,marketing_whatsapp_opt_in:profile.marketing_whatsapp_opt_in===true,preferred_marketing_channel:profile.preferred_marketing_channel||null,order_count:validOrders.length,total_spend_inr:spend,average_order_value_inr:avgOrderValue,last_order_at:lastOrder,last_order_days:lastOrderDays,last_seen_at:lastSeen,lifecycle_segment:segment,intent:{score:intentScore,views:x.views,add_to_cart:x.add_to_cart,checkouts:x.checkouts,searches:[...new Set(x.searches)].slice(0,8)},top_interests:top,next_best_action:nextBestAction,eligible_for_personalized_offer:profile.marketing_opt_in===true&&top.length>0&&!!customerEligibleChannel(profile)});
-  output.sort((a,b)=>b.intent.score-a.intent.score);const counts={};for(const x of output)counts[x.lifecycle_segment]=(counts[x.lifecycle_segment]||0)+1;return {period_days:Number(days||30),customers:output.slice(0,500),segments:counts,consent_coverage:{marketing_opt_in:output.filter(x=>x.marketing_opt_in).length,phone_verified:output.filter(x=>x.phone_verified).length,whatsapp_opt_in:output.filter(x=>x.marketing_whatsapp_opt_in).length,sms_opt_in:output.filter(x=>x.marketing_sms_opt_in).length,email_opt_in:output.filter(x=>x.marketing_email_opt_in).length},note:'Segments use non-sensitive first-party shopping activity and order data only; they are for store operations and messaging eligibility.'};
+  for(const ev of(Array.isArray(rows)?rows:[])){
+    const cid=String(ev.customer_id||'');if(!cid)continue;
+    const x=byCustomer[cid]||(byCustomer[cid]={last_seen_at:null,product_scores:{},searches:[],add_to_cart:0,checkouts:0,views:0});
+    if(!x.last_seen_at||new Date(ev.created_at)>new Date(x.last_seen_at))x.last_seen_at=ev.created_at;
+    if(ev.event_name==='product_view')x.views++;
+    if(ev.event_name==='add_to_cart')x.add_to_cart++;
+    if(ev.event_name==='checkout_start')x.checkouts++;
+    const pid=String(ev.product_id||'');
+    if(pid){const weights={product_view:1,add_to_cart:3,checkout_start:4,purchase_success:5};const w=weights[ev.event_name]||0;if(w)x.product_scores[pid]=(x.product_scores[pid]||0)+w;}
+    if(ev.event_name==='product_search'){const q=String(ev.metadata?.query||'').trim().slice(0,120);if(q)x.searches.push(q);}
+  }
+  const spendValues=customers.map(c=>orders.filter(o=>o.customer_id===c.id&&o.status!=='CANCELLED').reduce((n,o)=>n+Number(o.totals?.total_inr||0),0)).filter(n=>n>0).sort((a,b)=>a-b);
+  const q75=spendValues.length?spendValues[Math.floor((spendValues.length-1)*0.75)]:0;
+  const output=[];
+  for(const profile of customers){
+    const x=byCustomer[profile.id]||{last_seen_at:profile.last_seen_at||null,product_scores:{},searches:[],add_to_cart:0,checkouts:0,views:0};
+    const mine=orders.filter(o=>o.customer_id===profile.id||(o.customer?.email&&profile.email&&String(o.customer.email).toLowerCase()===String(profile.email).toLowerCase()));
+    const validOrders=mine.filter(o=>o.status!=='CANCELLED');
+    const spend=validOrders.reduce((n,o)=>n+Number(o.totals?.total_inr||0),0);
+    const lastOrder=validOrders.map(o=>o.created).sort().slice(-1)[0]||null;
+    const lastSeen=x.last_seen_at||profile.last_seen_at||profile.last_login_at||profile.created||null;
+    const recencyDays=lastOrder?Math.max(0,Math.floor((Date.now()-new Date(lastOrder).getTime())/86400000)):null;
+    const activeDays=lastSeen?Math.max(0,Math.floor((Date.now()-new Date(lastSeen).getTime())/86400000)):null;
+    const top=Object.entries(x.product_scores).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([pid,score])=>{
+      const p=products.find(z=>z.id===pid);return p?{product_id:pid,name:p.name,category:p.category,score,price_inr:Number(p.price_inr||0)}:null;
+    }).filter(Boolean);
+    const intentScore=Object.values(x.product_scores).reduce((n,v)=>n+Number(v||0),0);
+    let segment='NO_PURCHASE';
+    if(validOrders.length===0&&intentScore>=8)segment='HIGH_INTENT';
+    else if(validOrders.length===0&&activeDays!==null&&activeDays<=7)segment='NEW';
+    else if(validOrders.length>=2&&recencyDays!==null&&recencyDays<=45)segment='LOYAL';
+    else if(spendValues.length&&spend>=q75&&q75>0)segment='HIGH_VALUE';
+    else if(recencyDays!==null&&recencyDays>=91)segment='DORMANT';
+    else if(recencyDays!==null&&recencyDays>=46)segment='AT_RISK';
+    else if(validOrders.length>0)segment='ACTIVE';
+    let nextBestAction='Observe';
+    if(segment==='HIGH_INTENT')nextBestAction='Product-help follow-up';
+    else if(segment==='NEW')nextBestAction='Welcome + category guidance';
+    else if(segment==='LOYAL')nextBestAction='Cross-sell / loyalty';
+    else if(segment==='HIGH_VALUE')nextBestAction='VIP retention / relevant new arrivals';
+    else if(segment==='AT_RISK')nextBestAction='Win-back with relevant value';
+    else if(segment==='DORMANT')nextBestAction='Reactivation campaign';
+    else if(segment==='ACTIVE')nextBestAction='Cross-sell based on interest';
+    const marketingOptIn=profile.marketing_opt_in===true;
+    const emailOk=profile.marketing_email_opt_in===true&&!!profile.email;
+    const phoneOk=!!profile.phone_verified_at;
+    const whatsappOk=profile.marketing_whatsapp_opt_in===true&&phoneOk;
+    const smsOk=profile.marketing_sms_opt_in===true&&phoneOk;
+    output.push({
+      customer_id:profile.id,name:profile.name||'',email:profile.email||'',phone:profile.phone||'',phone_verified:phoneOk,
+      marketing_opt_in:marketingOptIn,marketing_email_opt_in:emailOk,marketing_sms_opt_in:smsOk,marketing_whatsapp_opt_in:whatsappOk,
+      preferred_marketing_channel:profile.preferred_marketing_channel||null,order_count:validOrders.length,total_spend_inr:spend,
+      average_order_value_inr:validOrders.length?spend/validOrders.length:0,last_order_at:lastOrder,last_order_days:recencyDays,last_seen_at:lastSeen,
+      lifecycle_segment:segment,intent:{score:intentScore,views:x.views,add_to_cart:x.add_to_cart,checkouts:x.checkouts,searches:[...new Set(x.searches)].slice(0,8)},
+      top_interests:top,next_best_action:nextBestAction,eligible_for_personalized_offer:marketingOptIn&&top.length>0&&(whatsappOk||smsOk||emailOk)
+    });
+  }
+  output.sort((a,b)=>b.intent.score-a.intent.score);
+  const counts={};for(const x of output)counts[x.lifecycle_segment]=(counts[x.lifecycle_segment]||0)+1;
+  return {
+    period_days:periodDays,customers:output.slice(0,500),segments:counts,
+    consent_coverage:{
+      marketing_opt_in:output.filter(x=>x.marketing_opt_in).length,
+      phone_verified:output.filter(x=>x.phone_verified).length,
+      whatsapp_opt_in:output.filter(x=>x.marketing_whatsapp_opt_in).length,
+      sms_opt_in:output.filter(x=>x.marketing_sms_opt_in).length,
+      email_opt_in:output.filter(x=>x.marketing_email_opt_in).length
+    },
+    note:'Segments use non-sensitive first-party shopping activity and order data only; messaging eligibility requires channel-specific consent.'
+  };
 }
 function detectSupportIntent(message){
   const q=String(message||'').toLowerCase();

@@ -648,20 +648,10 @@ async function notifyCustomer(customer,message){
   }
   return results;
 }
-async function sendMarketingOffer(customer,offer){
-  if(!customer?.marketing_opt_in)return {skipped:true,reason:'customer marketing opt-in is false'};
-  const productText=offer.product_name?' for '+offer.product_name:'';
-  const message='BBest Globly offer'+productText+': use code '+String(offer.code||'')+' for '+String(offer.discount_value||0)+'% off. This offer is personalized based on your recent store activity.';
-  const results=[];
-  if(customer?.phone&&WHATSAPP_TOKEN)try{results.push({channel:'whatsapp',ok:true,response:await sendWhatsAppText(customer.phone,message)})}catch(e){results.push({channel:'whatsapp',ok:false,error:e.message})}
-  if(customer?.phone&&TWILIO_ACCOUNT_SID)try{results.push({channel:'sms',ok:true,response:await sendSmsText(customer.phone,message)})}catch(e){results.push({channel:'sms',ok:false,error:e.message})}
-  if(customer?.email&&gmailOtpReady)try{
-    const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
-    await transporter.sendMail({from:GMAIL_SMTP_USER,to:String(customer.email),subject:'A personalized BBest Globly offer',text:message});
-    results.push({channel:'email',ok:true});
-  }catch(e){results.push({channel:'email',ok:false,error:e.message})}
-  return {skipped:false,results};
-}
+async function logMarketingMessage(row){if(!supabaseReady)return;try{await supabaseRequest('marketing_messages',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify(row)});}catch(e){console.error('[marketing log]',e.message)}}
+async function sendWhatsAppMarketingTemplate(to,templateName,languageCode,params=[]){if(!WHATSAPP_TOKEN||!WHATSAPP_PHONE_NUMBER_ID||!WHATSAPP_GRAPH_VERSION)throw new Error('WhatsApp Cloud API is not configured');if(!templateName)throw new Error('Approved WhatsApp marketing template is not configured');const components=params.length?[{type:'body',parameters:params.slice(0,8).map(x=>({type:'text',text:String(x).slice(0,500)}))}]:undefined;return await externalJson('https://graph.facebook.com/'+WHATSAPP_GRAPH_VERSION+'/'+encodeURIComponent(WHATSAPP_PHONE_NUMBER_ID)+'/messages',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+WHATSAPP_TOKEN},body:JSON.stringify({messaging_product:'whatsapp',to:normalizePhone(to).replace('+',''),type:'template',template:{name:templateName,language:{code:languageCode||WHATSAPP_MARKETING_LANGUAGE},...(components?{components}: {})}})});}
+async function sendMarketingMessage(customer,opts={}){const channel=String(opts.channel||'email').toLowerCase(),phoneVerified=!!customer.phone_verified_at;const allowed=channel==='whatsapp'?customer.marketing_whatsapp_opt_in===true&&phoneVerified:channel==='sms'?customer.marketing_sms_opt_in===true&&phoneVerified:channel==='email'?customer.marketing_email_opt_in===true&&!!customer.email:false;const base={id:'MSG-'+crypto.randomBytes(8).toString('hex'),customer_id:customer.id,campaign_id:opts.campaign_id||null,channel,message_type:'MARKETING',template_name:opts.template_name||null,body_preview:String(opts.body||'').slice(0,500),consent_snapshot:{marketing_opt_in:!!customer.marketing_opt_in,email:!!customer.marketing_email_opt_in,sms:!!customer.marketing_sms_opt_in,whatsapp:!!customer.marketing_whatsapp_opt_in,phone_verified:phoneVerified},created_at:new Date().toISOString()};if(!allowed){await logMarketingMessage({...base,status:'SKIPPED',error:'Missing channel consent, verified phone, or email'});return {channel,status:'SKIPPED',reason:'Missing channel consent, verified phone, or email'};}try{let response;if(channel==='whatsapp')response=await sendWhatsAppMarketingTemplate(customer.phone,opts.template_name||WHATSAPP_MARKETING_TEMPLATE_NAME,opts.template_language||WHATSAPP_MARKETING_LANGUAGE,opts.template_params||[]);else if(channel==='sms')response=await sendSmsText(customer.phone,(String(opts.body||'').trim()+'\nReply STOP to opt out.').trim());else if(channel==='email'){if(!gmailMailerReady)throw new Error('Email provider is not configured');const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});response=await transporter.sendMail({from:GMAIL_SMTP_USER,to:String(customer.email),subject:String(opts.subject||'A BBest Globly update'),text:String(opts.body||'')});}else throw new Error('Unsupported marketing channel');await logMarketingMessage({...base,status:'SENT',provider_message_id:String(response?.sid||response?.messages?.[0]?.id||response?.messageId||''),sent_at:new Date().toISOString()});return {channel,status:'SENT'};}catch(e){await logMarketingMessage({...base,status:'FAILED',error:e.message});return {channel,status:'FAILED',error:e.message};}}
+async function sendMarketingOffer(customer,offer){if(!customer?.marketing_opt_in)return {skipped:true,reason:'customer marketing opt-in is false'};const productText=offer.product_name?' for '+offer.product_name:'';const plain='BBest Globly offer'+productText+': use code '+String(offer.code||'')+' for '+String(offer.discount_value||0)+'% off. Valid until '+String(offer.ends_at||'the expiry date')+'.';const results=[];for(const channel of ['whatsapp','sms','email'])results.push(await sendMarketingMessage(customer,{channel,body:plain,subject:'A personalized BBest Globly offer',template_name:WHATSAPP_MARKETING_TEMPLATE_NAME,template_params:[customer.name||'there',String(offer.discount_value||0)+'%',String(offer.code||'')] }));return {skipped:false,results};}
 async function notifyOrderStatus(order,status){
   if(!order?.customer)return {results:[]};
   const text={
@@ -2459,6 +2449,12 @@ const server = http.createServer(async (req, res) => {
             const sendResult=await sendMarketingOffer(customer,{...row,product_name:product?.name||null});
             await auditAdmin('admin','SEND_PERSONALIZED_OFFER','customer',customerId,{offer_id:id,product_id:productId||null,send_result:sendResult});
             result={ok:true,action:type,offer:row,send_result:sendResult};
+          } else if(type==='send_marketing_campaign'){
+            const channel=String(payload.channel||'').toLowerCase();if(!['whatsapp','sms','email'].includes(channel))return json(res,400,{error:'invalid marketing channel'});
+            let ids=Array.isArray(payload.customer_ids)?payload.customer_ids.map(String).slice(0,500):[];
+            if(!ids.length){const intel=await buildCustomerMarketingIntelligence(30);ids=(intel.customers||[]).filter(x=>!payload.segment||x.lifecycle_segment===String(payload.segment).toUpperCase()).filter(x=>channel==='whatsapp'?x.marketing_whatsapp_opt_in&&x.phone_verified:channel==='sms'?x.marketing_sms_opt_in&&x.phone_verified:channel==='email'?x.marketing_email_opt_in&&!!x.email:false).map(x=>x.customer_id).slice(0,500);}
+            const all=readJSON('customers.json',[]),results=[];for(const id of ids){const customer=all.find(x=>x.id===id);if(!customer)continue;results.push({customer_id:id,...await sendMarketingMessage(customer,{channel,body:payload.body,subject:payload.subject,template_name:payload.template_name,template_params:payload.template_params,campaign_id:payload.campaign_id})});}
+            result={ok:true,action:type,channel,audience_requested:ids.length,results};
           } else if(type==='create_campaign' || type==='run_ad_campaign' || type==='publish_campaign'){
             if(!supabaseReady)return json(res,503,{error:'Supabase is required for campaign persistence'});
             const budget=Math.max(0,Number(payload.budget_inr||0));
@@ -2544,7 +2540,19 @@ const server = http.createServer(async (req, res) => {
           customers: readJSON('customers.json', []).length
         });
       }
-      if (p === '/api/admin/marketing/personalized-plan' && req.method === 'POST') {
+      if (p === '/api/admin/marketing/audience' && req.method === 'GET') {
+  try{const intel=await buildCustomerMarketingIntelligence(Number(url.searchParams.get('days')||30)),segment=String(url.searchParams.get('segment')||'').toUpperCase(),channel=String(url.searchParams.get('channel')||'').toLowerCase();let audience=(intel.customers||[]).filter(x=>!segment||x.lifecycle_segment===segment).filter(x=>channel==='whatsapp'?x.marketing_whatsapp_opt_in&&x.phone_verified:channel==='sms'?x.marketing_sms_opt_in&&x.phone_verified:channel==='email'?x.marketing_email_opt_in&&!!x.email:x.marketing_opt_in);return json(res,200,{period_days:intel.period_days,segment:segment||'ALL',channel:channel||'ANY',count:audience.length,audience:audience.slice(0,500),segments:intel.segments,consent_coverage:intel.consent_coverage});}catch(e){return json(res,502,{error:e.message})}
+}
+if (p === '/api/admin/marketing/seasonal-plan' && req.method === 'POST') {
+  const b=await readBody(req),occasion=String(b.occasion||'seasonal campaign').trim().slice(0,100),channel=['whatsapp','sms','email'].includes(String(b.channel||'').toLowerCase())?String(b.channel).toLowerCase():'email';
+  const intel=await buildCustomerMarketingIntelligence(30);
+  const action={type:'send_marketing_campaign',payload:{name:String(b.name||('BBest Globly — '+occasion)).slice(0,120),channel,segment:String(b.segment||'').toUpperCase(),subject:String(b.subject||('BBest Globly — '+occasion)).slice(0,160),body:String(b.body||'').slice(0,3000),template_name:String(b.template_name||WHATSAPP_MARKETING_TEMPLATE_NAME).slice(0,120),template_params:Array.isArray(b.template_params)?b.template_params.slice(0,8):[],customer_ids:Array.isArray(b.customer_ids)?b.customer_ids.slice(0,500):[]},reason:'Seasonal/lifecycle marketing. Only customers with channel-specific consent are eligible; owner approval is required before outbound sending.',requiresApproval:true};
+  const stored=await createAgentApprovals([action]);return json(res,201,{ok:true,approvalId:stored[0]?.id||null,intelligence:intel,action:{...action,approvalId:stored[0]?.id||null}});
+}
+if (p === '/api/admin/marketing/send-test' && req.method === 'POST') {
+  const b=await readBody(req),customerId=String(b.customer_id||'').trim(),channel=String(b.channel||'').toLowerCase(),cust=readJSON('customers.json',[]).find(x=>x.id===customerId);if(!cust)return json(res,404,{error:'customer not found'});if(!['whatsapp','sms','email'].includes(channel))return json(res,400,{error:'invalid channel'});return json(res,200,{ok:true,result:await sendMarketingMessage(cust,{channel,body:String(b.body||'Test message from BBest Globly').slice(0,1000),subject:'BBest Globly test message',template_name:String(b.template_name||WHATSAPP_MARKETING_TEMPLATE_NAME),template_params:Array.isArray(b.template_params)?b.template_params.slice(0,8):[]})});
+}
+if (p === '/api/admin/marketing/personalized-plan' && req.method === 'POST') {
         const b=await readBody(req),customerId=String(b.customer_id||'').trim(),productId=String(b.product_id||'').trim();
         if(!customerId||!productId)return json(res,400,{error:'customer_id and product_id are required'});
         const intel=await buildCustomerMarketingIntelligence(30);

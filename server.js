@@ -664,7 +664,8 @@ async function notifyOrderStatus(order,status){
 async function liveResearch(query){
   if(!RESEARCH_API_URL||!RESEARCH_API_KEY)throw new Error('Live research provider is not configured');
   const d=await externalJson(RESEARCH_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+RESEARCH_API_KEY},body:JSON.stringify({query:String(query||'').slice(0,3000),market:'IN',language:'en',return_sources:true})});
-  return {provider:'configured',data:d};
+  const snap=await saveResearchSnapshot(query,'configured',d,'SUCCESS');
+  return {provider:'configured',data:d,snapshot:snap};
 }
 async function importAdSpend(){
   if(!AD_SPEND_API_URL||!AD_SPEND_API_KEY)throw new Error('Ad spend provider is not configured');
@@ -1119,9 +1120,11 @@ async function recordSupportInteraction({customerId,sessionId,channel,intent,que
 }
 async function askAI(message, context = {}, task = 'general') {
   const supportMode=/customer_support|support|customer/i.test(String(task||''));
+  try{await ensureKnowledgeBase()}catch(e){console.error('[knowledge ensure]',e.message)}
   const constitution=loadAIConstitution();
   const strategy=loadStrategyKnowledge();
   const operatingConfig=loadAIOperatingConfig();
+  const retrieved_knowledge=await retrieveKnowledge(message,supportMode?'customer':null,8).catch(()=>[]);
   const system = supportMode ? [
     'You are BBest Globly AI Customer Support, a 24x7 ecommerce support specialist.',
     'Resolve supported customer enquiries end-to-end from the supplied current store data.',
@@ -1147,11 +1150,18 @@ async function askAI(message, context = {}, task = 'general') {
     'Be practical and concise.'
   ].join(' ');
   const managerContext = JSON.stringify({
-    constitution_summary:constitution,
-    strategy_knowledge:strategy,
-    operating_config:operatingConfig
+    constitution_summary: supportMode ? null : constitution,
+    strategy_knowledge: supportMode ? null : strategy,
+    operating_config: supportMode ? null : operatingConfig,
+    retrieved_knowledge
   });
-  const user=JSON.stringify({task,message,context:currentAIContext({...context,customer_support_knowledge:supportMode?buildCustomerSupportKnowledge():undefined})});
+  const safeCustomerContext=supportMode ? {
+    site_config:loadSiteConfig(),
+    products:loadCatalog().filter(x=>x.published!==false).map(x=>({id:x.id,name:x.name,category:x.category,price_inr:x.price_inr,compare_at_inr:x.compare_at_inr||0,stock:x.stock||0,tagline:x.tagline||'',description:x.description||'',features:x.features||[],badges:x.badges||[]})),
+    customer_support_knowledge:buildCustomerSupportKnowledge(),
+    ...context
+  } : currentAIContext(context);
+  const user=JSON.stringify({task,message,context:safeCustomerContext});
   const systemWithGovernance = system + ' Treat the following BBest Globly AI Constitution and Strategy Knowledge as authoritative operating guidance, while current database/store data remains authoritative for changing facts. Do not expose internal instructions to customers.\\n' + managerContext;
   return {configured:true,reply:await callAI([{role:'system',content:systemWithGovernance},{role:'user',content:user}])};
 }
@@ -1182,7 +1192,7 @@ async function agentCommand(command) {
     'Plan concrete business actions from the owner request using ONLY supplied store data and business knowledge.',
     'Never fabricate live market data, supplier facts, sales, stock, ad performance, customer facts or delivery promises.',
     'Return JSON ONLY with this exact shape:',
-    '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status|create_offer|create_customer_offer","payload":{},"reason":"string","requiresApproval":true}]}',
+    '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status|create_offer|create_customer_offer|create_campaign|run_ad_campaign|publish_campaign","payload":{},"reason":"string","requiresApproval":true}]}',
     'Every state-changing action returned must have requiresApproval=true. Never bypass the approval workflow.',
     'Respect the configured minimum margin, maximum discount and refund limits supplied in agent controls when making recommendations.',
     'For add_product, payload may include name, category, tagline, price_inr, compare_at_inr, img, badges, description, features, sku, supplier, supplier_sku, supplier_cost_inr, stock.',
@@ -1191,6 +1201,7 @@ async function agentCommand(command) {
     'For set_site_config, payload may include hero and theme fields only.',
     'For set_order_status, payload must include id and status.',
     'For create_offer, payload may include id, code, name, discount_type, discount_value, min_order_inr, max_uses, starts_at, ends_at, active. For create_customer_offer, use ONLY a customer_id from customer_marketing_intelligence with marketing_opt_in=true, include product_id when a specific product is being offered, and include name, discount_type and discount_value.',
+    'For create_campaign/run_ad_campaign/publish_campaign, include name, channel, objective, budget_inr, starts_at, ends_at, product_ids and creative. Paid execution and publication always require owner approval and must not be claimed as live without a connected executor.'
     'Clearly separate REAL DATA, CALCULATED METRICS, AI ANALYSIS, AI RECOMMENDATION, CONFIDENCE and NEEDS OWNER APPROVAL.'
   ].join(' ') + '\nCONSTITUTION:\n' + JSON.stringify(constitution) + '\nSTRATEGY:\n' + JSON.stringify(strategy);
   const raw=await callAI([
@@ -1323,12 +1334,186 @@ function startSession(kind, id, adminRole) {
   return token;
 }
 
+
+const EMBEDDING_API_URL=String(process.env.EMBEDDING_API_URL||'').trim();
+const EMBEDDING_API_KEY=String(process.env.EMBEDDING_API_KEY||'').trim();
+const EMBEDDING_MODEL=String(process.env.EMBEDDING_MODEL||'').trim();
+const EMBEDDING_DIM=384;
+const INDIAMART_GLID=String(process.env.INDIAMART_GLID||'').trim();
+const INDIAMART_CRM_KEY=String(process.env.INDIAMART_CRM_KEY||'').trim();
+const INDIAMART_API_URL=String(process.env.INDIAMART_API_URL||'https://mapi.indiamart.com/wservce/crm/crmListing/v2/').trim();
+
+let knowledgeSeededAt=0;
+async function supabaseRpc(fn,body){
+  return await supabaseRequest('rpc/'+encodeURIComponent(fn),{method:'POST',body:JSON.stringify(body||{})});
+}
+function knowledgeDocuments(){
+  const docs=[];
+  const push=(id,title,content,visibility,category,source_type='internal',metadata={})=>{
+    if(content)docs.push({id,title,content:typeof content==='string'?content:JSON.stringify(content),visibility,category,source_type,metadata});
+  };
+  push('kb-ai-constitution','BBest Globly AI Constitution',loadAIConstitution(),'admin','governance');
+  push('kb-ai-operating-config','BBest Globly AI Operating Config',loadAIOperatingConfig(),'admin','operations');
+  push('kb-strategy','BBest Globly Strategy Knowledge',loadStrategyKnowledge(),'admin','strategy');
+  push('kb-business','BBest Globly Business Knowledge',loadBusinessKnowledge(),'admin','business');
+  push('kb-customer-support','BBest Globly Customer Support Knowledge',loadCustomerSupportKnowledge(),'customer','support');
+  push('kb-site-config','BBest Globly Storefront Configuration',loadSiteConfig(),'customer','storefront');
+  for(const p of loadCatalog().filter(x=>x.published!==false)){
+    push('product-'+p.id,'Product: '+p.name,{
+      id:p.id,name:p.name,category:p.category,tagline:p.tagline,price_inr:p.price_inr,
+      compare_at_inr:p.compare_at_inr||0,description:p.description,features:p.features||[],badges:p.badges||[],
+      stock:p.stock||0,published:true
+    },'customer','product','catalogue');
+  }
+  return docs;
+}
+function normalizeEmbedding(x){
+  let v=x;
+  if(x&&Array.isArray(x.data)&&x.data[0]?.embedding)v=x.data[0].embedding;
+  else if(x&&Array.isArray(x.embedding))v=x.embedding;
+  else if(Array.isArray(x)&&Array.isArray(x[0]))v=x[0];
+  if(!Array.isArray(v)||v.length!==EMBEDDING_DIM)return null;
+  return v.map(Number);
+}
+async function embedText(textValue){
+  if(!EMBEDDING_API_URL||!EMBEDDING_API_KEY)return null;
+  const d=await externalJson(EMBEDDING_API_URL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+EMBEDDING_API_KEY},body:JSON.stringify({model:EMBEDDING_MODEL||undefined,input:String(textValue||'').slice(0,8000)})});
+  return normalizeEmbedding(d);
+}
+async function upsertKnowledgeDocument(doc){
+  if(!supabaseReady)return;
+  let embedding=null;
+  try{embedding=await embedText(doc.title+'\n'+doc.content)}catch(e){console.error('[knowledge embedding]',e.message)}
+  const row={id:doc.id,title:doc.title,content:doc.content,source_type:doc.source_type||'internal',source_ref:doc.source_ref||null,visibility:doc.visibility||'admin',category:doc.category||null,embedding,active:true,metadata:doc.metadata||{},updated_at:new Date().toISOString()};
+  await supabaseRequest('knowledge_documents?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])});
+}
+async function ensureKnowledgeBase(force=false){
+  if(!supabaseReady)return;
+  if(!force && Date.now()-knowledgeSeededAt<6*60*60*1000)return;
+  for(const doc of knowledgeDocuments()){
+    try{await upsertKnowledgeDocument(doc)}catch(e){console.error('[knowledge seed]',doc.id,e.message)}
+  }
+  knowledgeSeededAt=Date.now();
+}
+async function retrieveKnowledge(query,visibility=null,limit=8){
+  if(!supabaseReady)return [];
+  const q=String(query||'').trim();if(!q)return [];
+  const scopes=visibility? [visibility] : [null];
+  const out=[];
+  for(const scope of scopes){
+    try{
+      const rows=await supabaseRpc('search_knowledge_documents',{query_text:q,p_visibility:scope,match_count:Math.min(12,limit)});
+      if(Array.isArray(rows))out.push(...rows.map(x=>({...x,source:'keyword'})));
+    }catch(e){console.error('[knowledge search]',e.message)}
+  }
+  const seen=new Set();
+  return out.filter(x=>{if(seen.has(x.id))return false;seen.add(x.id);return true}).sort((a,b)=>Number(b.rank||0)-Number(a.rank||0)).slice(0,limit);
+}
+
+function createAIConversationId(){return 'AIC-'+Date.now().toString(36).toUpperCase()+'-'+crypto.randomBytes(4).toString('hex').toUpperCase()}
+async function createAIConversation(req,body={}){
+  if(!supabaseReady)throw new Error('Supabase persistence is required for AI conversations');
+  const a=getAuth(req),customerId=a?.session?.customerId||null,sessionId=String(body.session_id||'').trim().slice(0,100)||null;
+  const id=createAIConversationId();
+  const row={id,customer_id:customerId,session_id:sessionId,channel:String(body.channel||'website').slice(0,30),title:String(body.title||'New support chat').slice(0,160),status:'ACTIVE'};
+  await supabaseRequest('ai_conversations',{method:'POST',headers:{'Prefer':'return=representation'},body:JSON.stringify([row])});
+  return row;
+}
+async function getAIConversation(id,req,{allowDeleted=false}={}){
+  if(!supabaseReady)throw new Error('Supabase persistence is required for AI conversations');
+  const rows=await supabaseRequest('ai_conversations?select=*&id=eq.'+encodeURIComponent(id)+'&limit=1');
+  const row=Array.isArray(rows)?rows[0]:null;if(!row)return null;
+  const a=getAuth(req),sid=String(req.headers['x-ai-session-id']||'').trim();
+  const own=a?.session?.customerId ? row.customer_id===a.session.customerId : row.customer_id===null && row.session_id===sid;
+  const admin=a?.session?.admin===true;
+  if(!admin&&!own)return null;
+  if(!allowDeleted&&row.status==='DELETED')return null;
+  return row;
+}
+async function getAIMessages(conversationId,limit=50){
+  if(!supabaseReady)return [];
+  const rows=await supabaseRequest('ai_messages?select=*&conversation_id=eq.'+encodeURIComponent(conversationId)+'&order=created_at.asc&limit='+Math.min(200,Math.max(1,Number(limit||50))));
+  return Array.isArray(rows)?rows:[];
+}
+async function appendAIMessage(conversationId,role,content,meta={}){
+  if(!supabaseReady)return;
+  await supabaseRequest('ai_messages',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([{
+    conversation_id:conversationId,role,content:String(content||'').slice(0,8000),
+    intent:meta.intent||null,escalated:meta.escalated===true,metadata:meta.metadata||{}
+  }])});
+  await supabaseRequest('ai_conversations?id=eq.'+encodeURIComponent(conversationId),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify({updated_at:new Date().toISOString()})});
+}
+async function listAIConversations(req){
+  if(!supabaseReady)return [];
+  const a=getAuth(req),sid=String(req.headers['x-ai-session-id']||'').trim();
+  let q='ai_conversations?select=id,customer_id,session_id,channel,title,status,created_at,updated_at&status=neq.DELETED&order=updated_at.desc&limit=30';
+  if(a?.session?.admin!==true){
+    if(a?.session?.customerId)q+='&customer_id=eq.'+encodeURIComponent(a.session.customerId);
+    else if(sid)q+='&session_id=eq.'+encodeURIComponent(sid)+'&customer_id=is.null';
+    else return [];
+  }
+  const rows=await supabaseRequest(q);return Array.isArray(rows)?rows:[];
+}
+async function deleteAIConversation(id,req){
+  const row=await getAIConversation(id,req);if(!row)throw new Error('conversation not found');
+  await supabaseRequest('ai_conversations?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify({status:'DELETED',updated_at:new Date().toISOString()})});
+  return {ok:true,id};
+}
+
+async function saveResearchSnapshot(query,provider,data,status='SUCCESS'){
+  if(!supabaseReady)return null;
+  const id='RS-'+Date.now().toString(36).toUpperCase()+'-'+crypto.randomBytes(3).toString('hex').toUpperCase();
+  const row={id,query:String(query||'').slice(0,1000),provider:String(provider||'configured').slice(0,80),status,data:data&&typeof data==='object'?data:{value:String(data||'')},fetched_at:new Date().toISOString(),created_at:new Date().toISOString()};
+  await supabaseRequest('research_snapshots',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([row])});
+  return row;
+}
+function indiaMartTime(d){
+  const x=new Date(d||Date.now()),pad=n=>String(n).padStart(2,'0');
+  const months=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+  return pad(x.getDate())+'-'+months[x.getMonth()]+'-'+x.getFullYear()+pad(x.getHours())+':'+pad(x.getMinutes())+':'+pad(x.getSeconds());
+}
+async function syncIndiaMartLeads(hours=24){
+  if(!INDIAMART_CRM_KEY)throw new Error('INDIAMART_CRM_KEY is not configured');
+  if(!supabaseReady)throw new Error('Supabase is required for IndiaMART lead persistence');
+  const end=new Date(),start=new Date(end.getTime()-Math.max(1,Math.min(72,Number(hours||24)))*3600000);
+  const u=new URL(INDIAMART_API_URL);
+  u.searchParams.set('glusr_crm_key',INDIAMART_CRM_KEY);
+  u.searchParams.set('start_time',indiaMartTime(start));
+  u.searchParams.set('end_time',indiaMartTime(end));
+  const d=await externalJson(u.toString(),{headers:{'Accept':'application/json'}});
+  const list=Array.isArray(d)?d:(Array.isArray(d?.RESPONSE)?d.RESPONSE:(Array.isArray(d?.response)?d.response:[]));
+  let saved=0;
+  for(const x of list.slice(0,2000)){
+    const unique=String(x.UNIQUE_QUERY_ID||x.unique_query_id||crypto.randomBytes(8).toString('hex')).slice(0,120);
+    const row={id:'IM-'+unique,unique_query_id:unique,query_type:String(x.QUERY_TYPE||'').slice(0,80)||null,sender_name:String(x.SENDER_NAME||'').slice(0,120)||null,sender_company:String(x.SENDER_COMPANY||'').slice(0,160)||null,sender_mobile:String(x.SENDER_MOBILE||'').slice(0,30)||null,sender_email:String(x.SENDER_EMAIL||'').toLowerCase().slice(0,160)||null,sender_city:String(x.SENDER_CITY||'').slice(0,80)||null,sender_state:String(x.SENDER_STATE||'').slice(0,80)||null,sender_pincode:String(x.SENDER_PINCODE||'').slice(0,20)||null,sender_address:String(x.SENDER_ADDRESS||'').slice(0,300)||null,product_name:String(x.QUERY_PRODUCT_NAME||'').slice(0,180)||null,category_name:String(x.QUERY_MCAT_NAME||'').slice(0,180)||null,query_message:String(x.QUERY_MESSAGE||'').slice(0,3000)||null,query_time:x.QUERY_TIME?new Date(x.QUERY_TIME).toISOString():null,status:'NEW',payload:x,last_seen_at:new Date().toISOString(),updated_at:new Date().toISOString()};
+    await supabaseRequest('indiamart_leads?on_conflict=unique_query_id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])});saved++;
+  }
+  await supabaseRequest('connector_syncs?on_conflict=connector',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([{id:'sync-indiamart',connector:'indiamart',status:'SUCCESS',last_synced_at:new Date().toISOString(),last_success_at:new Date().toISOString(),error:null,metadata:{saved,hours}}])});
+  return {saved,fetched:list.length,start_time:indiaMartTime(start),end_time:indiaMartTime(end)};
+}
+
+async function createMarketingCampaign(payload,approvalId=null,status='DRAFT'){
+  if(!supabaseReady)throw new Error('Supabase is required for campaign persistence');
+  const id=String(payload.id||('CMP-'+Date.now().toString(36).toUpperCase()+'-'+crypto.randomBytes(3).toString('hex').toUpperCase())).slice(0,60);
+  const row={id,name:String(payload.name||'BBest Globly Campaign').slice(0,160),channel:String(payload.channel||'web').slice(0,50),status:String(status||'DRAFT').slice(0,40),objective:String(payload.objective||'').slice(0,300)||null,budget_inr:Math.max(0,Number(payload.budget_inr||0)),starts_at:payload.starts_at?new Date(payload.starts_at).toISOString():null,ends_at:payload.ends_at?new Date(payload.ends_at).toISOString():null,product_ids:Array.isArray(payload.product_ids)?payload.product_ids.slice(0,100):[],creative:payload.creative&&typeof payload.creative==='object'?payload.creative:{},metrics:{},owner_approval_id:approvalId||null,updated_at:new Date().toISOString()};
+  await supabaseRequest('marketing_campaigns?on_conflict=id',{method:'POST',headers:{'Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify([row])});
+  return row;
+}
+async function listPublishedReviews(productId=null){
+  if(!supabaseReady)return [];
+  let q='customer_reviews?select=*&status=eq.PUBLISHED&order=published_at.desc&limit=100';
+  if(productId)q+='&product_id=eq.'+encodeURIComponent(productId);
+  const rows=await supabaseRequest(q);return Array.isArray(rows)?rows:[];
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   let p;
   try { p = decodeURIComponent(url.pathname); } catch (e) { return json(res, 400, { error: 'bad path' }); }
   try {
-    if (p === '/api/health') return json(res, 200, { ok: true, service: 'bbest-globly-store', version: 2.3, persistence: supabaseReady ? 'supabase' : 'local', uptime: process.uptime() | 0, time: new Date().toISOString() });
+    if (p === '/api/health') return json(res, 200, { ok: true, service: 'bbest-globly-store', version: 3.0, persistence: supabaseReady ? 'supabase' : 'local', uptime: process.uptime() | 0, time: new Date().toISOString() });
+
+    if (p === '/robots.txt' && req.method === 'GET') return send(res,200,'User-agent: *\nAllow: /\nSitemap: '+BASE_URL+'/sitemap.xml\n','text/plain; charset=utf-8');
 
     if (p === '/sitemap.xml' && req.method === 'GET') {
       const urls = ['', '/shop', '/track'].concat(loadCatalog().filter(x => x.published !== false).map(x => '/product/' + x.id));
@@ -1451,9 +1636,9 @@ const server = http.createServer(async (req, res) => {
       }
       const id = 'BG-' + Date.now().toString(36).toUpperCase() + '-' + (100 + Math.floor(Math.random() * 900));
       const order = {
-        id, created: new Date().toISOString(), status: 'PENDING',
+        id, created: new Date().toISOString(), status: 'PENDING', fulfillment_state: b.payment_method === 'online' ? 'UNFULFILLED' : 'COD_CONFIRMATION_PENDING',
         customer_id: auth && auth.session.customerId ? auth.session.customerId : undefined,
-        payment: { method: b.payment_method === 'online' ? 'UPI/Card (Razorpay)' : 'COD', paid: false },
+        payment: { method: b.payment_method === 'online' ? 'UPI/Card (Razorpay)' : 'COD', paid: false, cod_confirmation_status: b.payment_method === 'online' ? 'NOT_APPLICABLE' : 'PENDING' },
         customer: {
           name: String(b.name).trim().slice(0, 80), phone: String(b.phone).trim().slice(0, 20),
           email: String(b.email || '').trim().slice(0, 80)
@@ -1467,6 +1652,7 @@ const server = http.createServer(async (req, res) => {
       };
       const orders = loadOrders(); orders.push(order); saveOrders(orders);
       if(applied_offer&&supabaseReady){try{await supabaseRequest('offers?id=eq.'+encodeURIComponent(applied_offer.id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify({used_at:new Date().toISOString()})})}catch(e){console.error('[offer use]',e.message)}}
+      if(order.payment.method==='COD'){try{await notifyCustomer(order.customer,'Please confirm your BBest Globly Cash on Delivery order '+order.id+'. Open your order page and confirm COD before fulfillment.')}catch(e){console.error('[cod notify]',e.message)}}
       let supplierRouting=null;
       if(supabaseReady){
         try{supplierRouting=await routeOrderToSupplier(id,false)}catch(e){supplierRouting={status:'NO_MAPPED_SUPPLIER',message:e.message}}
@@ -1479,8 +1665,33 @@ const server = http.createServer(async (req, res) => {
       const id = p.slice('/api/order/'.length);
       const o = loadOrders().find(x => x.id === id);
       if (!o) return json(res, 404, { error: 'order not found' });
-      const safe = { ...o, customer: { name: o.customer.name, phone: '••••' + String(o.customer.phone).slice(-4), email: o.customer.email ? '•••' : '' } };
+      const a=getAuth(req),providedPhone=String(url.searchParams.get('phone')||'').replace(/\D/g,'');
+      const owned=!!(a?.session?.customerId && (o.customer_id===a.session.customerId || (o.customer?.email&&readJSON('customers.json',[]).find(c=>c.id===a.session.customerId)?.email?.toLowerCase()===String(o.customer.email||'').toLowerCase())));
+      if(!owned && (!providedPhone || providedPhone!==String(o.customer?.phone||'').replace(/\D/g,'')))return json(res,403,{error:'Order verification required. Sign in or provide the phone number used on the order.'});
+      const safe={
+        id:o.id,status:o.status,total_inr:Number(o.totals?.total_inr||0),created:o.created,
+        items:(o.items||[]).map(i=>({id:i.id,name:i.name,qty:i.qty,price_inr:i.price_inr||0})),
+        payment:{method:o.payment?.method||null,paid:o.payment?.paid===true,cod_confirmation_status:o.payment?.cod_confirmation_status||null},
+        shiprocket_awb:o.shiprocket_awb||null,shiprocket_courier:o.shiprocket_courier||null,shipping_status:o.shipping_status||null,shipping_tracking_url:o.shipping_tracking_url||null,
+        fulfillment_state:o.fulfillment_state||null
+      };
       return json(res, 200, safe);
+    }
+
+    if (p.startsWith('/api/order/') && p.endsWith('/cod-confirm') && req.method === 'POST') {
+      const id=p.slice('/api/order/'.length,-'/cod-confirm'.length),b=await readBody(req),o=loadOrders().find(x=>x.id===id);
+      if(!o)return json(res,404,{error:'order not found'});
+      const a=getAuth(req),providedPhone=String(b.phone||'').replace(/\D/g,'');
+      const owned=!!(a?.session?.customerId && o.customer_id===a.session.customerId) || (!!providedPhone&&providedPhone===String(o.customer?.phone||'').replace(/\D/g,''));
+      if(!owned)return json(res,403,{error:'Order verification required'});
+      if(o.payment?.method!=='COD')return json(res,400,{error:'This order is not Cash on Delivery'});
+      const confirm=String(b.confirm||'').toLowerCase()==='true';
+      o.payment={...(o.payment||{}),cod_confirmation_status:confirm?'CONFIRMED':'DECLINED',cod_confirmed_at:new Date().toISOString()};
+      if(confirm)o.fulfillment_state='READY_FOR_FULFILLMENT'; else o.fulfillment_state='COD_CONFIRMATION_DECLINED';
+      saveOrders((()=>{const arr=loadOrders();const ix=arr.findIndex(x=>x.id===id);if(ix>=0)arr[ix]=o;return arr})());
+      if(confirm){try{await notifyOrderStatus(o,'CONFIRMED')}catch{}}
+      await auditAdmin('customer','COD_CONFIRMATION','order',id,{confirmed:confirm});
+      return json(res,200,{ok:true,id,status:o.payment.cod_confirmation_status,fulfillment_state:o.fulfillment_state});
     }
 
     if (p === '/api/my/orders' && req.method === 'GET') {
@@ -1495,41 +1706,64 @@ const server = http.createServer(async (req, res) => {
     }
 
 
-    /* ---------------- AI support ---------------- */
+    /* ---------------- AI support + persistent conversations ---------------- */
+    if (p === '/api/ai/conversations' && req.method === 'GET') {
+      try{return json(res,200,await listAIConversations(req))}catch(e){return json(res,503,{error:e.message})}
+    }
+    if (p === '/api/ai/conversations' && req.method === 'POST') {
+      try{
+        const row=await createAIConversation(req,await readBody(req));
+        res.setHeader('X-AI-Conversation-Id',row.id);
+        return json(res,201,{ok:true,conversation:row});
+      }catch(e){return json(res,503,{error:e.message})}
+    }
+    if (p.startsWith('/api/ai/conversations/') && p.endsWith('/messages') && req.method === 'GET') {
+      const id=decodeURIComponent(p.slice('/api/ai/conversations/'.length,-'/messages'.length));
+      try{const row=await getAIConversation(id,req);if(!row)return json(res,404,{error:'conversation not found'});return json(res,200,{conversation:row,messages:await getAIMessages(id,100)})}catch(e){return json(res,503,{error:e.message})}
+    }
+    if (p.startsWith('/api/ai/conversations/') && req.method === 'DELETE') {
+      const id=decodeURIComponent(p.slice('/api/ai/conversations/'.length));
+      try{return json(res,200,await deleteAIConversation(id,req))}catch(e){return json(res,404,{error:e.message})}
+    }
+
     if (p === '/api/ai/chat' && req.method === 'POST') {
       const a = getAuth(req), b = await readBody(req), channel = String(b.channel || 'website');
       if (channel !== 'website' && (!a || a.session.admin !== true)) return json(res,401,{error:'admin authentication required'});
-      const publicProducts=loadCatalog().filter(x=>x.published!==false).map(x=>({id:x.id,name:x.name,category:x.category,price_inr:x.price_inr,compare_at_inr:x.compare_at_inr||0,stock:x.stock||0,tagline:x.tagline,description:x.description,features:x.features||[],badges:x.badges||[]}));
-      let customer=null,customerOrders=[];
-      if(a?.session?.customerId){
-        customer=readJSON('customers.json',[]).find(x=>x.id===a.session.customerId)||null;
-        if(customer) customerOrders=loadOrders().filter(x=>x.customer_id===customer.id||(x.customer?.email&&x.customer.email.toLowerCase()===customer.email.toLowerCase())).map(x=>({
-          id:x.id,status:x.status,total_inr:x.totals?.total_inr||0,created:x.created,
-          payment:{method:x.payment?.method||null,paid:x.payment?.paid===true},
-          shiprocket_awb:x.shiprocket_awb||null,shiprocket_courier:x.shiprocket_courier||null,shipping_status:x.shipping_status||null,
-          fulfillment_state:x.fulfillment_state||null,items:(x.items||[]).map(i=>({id:i.id,name:i.name,qty:i.qty,price_inr:i.price_inr||0}))
-        })).reverse();
-      }
-      const intent=detectSupportIntent(String(b.message||''));
-      let context={
-        channel,public_products:publicProducts,
-        payment_configuration:{online_enabled:paymentsReady,cod_enabled:loadSiteConfig().features?.cod!==false},
-        customer:customer?{name:customer.name}:null,customer_orders:customerOrders,
-        conversation:Array.isArray(b.context?.conversation)?b.context.conversation.slice(-16):[]
-      };
-      if(a?.session?.admin===true){
-        context.orders=loadOrders().map(x=>({id:x.id,status:x.status,total_inr:x.totals?.total_inr,created:x.created,items:(x.items||[]).map(i=>({id:i.id,name:i.name,qty:i.qty}))}));
-        if(/marketing|offer|customer|campaign/i.test(String(b.task||'')+' '+String(b.message||''))){
-          try{context.customer_marketing_intelligence=await buildCustomerMarketingIntelligence(30)}catch(e){context.customer_marketing_intelligence={customers:[],error:e.message}}
-        }
-      }
+      const sessionId=String(b.session_id||req.headers['x-ai-session-id']||'').trim().slice(0,100)||null;
+      const authForConversation={headers:{'x-ai-session-id':sessionId},...req};
+      let conversationId=String(b.conversation_id||'').trim();
       try{
+        if(conversationId){
+          const row=await getAIConversation(conversationId,authForConversation);
+          if(!row)return json(res,404,{error:'conversation not found'});
+        }else{
+          const row=await createAIConversation(authForConversation,{session_id:sessionId,channel,title:String(b.message||'New support chat').slice(0,120)});
+          conversationId=row.id;
+        }
+        const prior=await getAIMessages(conversationId,16);
+        const publicProducts=loadCatalog().filter(x=>x.published!==false).map(x=>({id:x.id,name:x.name,category:x.category,price_inr:x.price_inr,compare_at_inr:x.compare_at_inr||0,stock:x.stock||0,tagline:x.tagline,description:x.description,features:x.features||[],badges:x.badges||[]}));
+        let customer=null,customerOrders=[];
+        if(a?.session?.customerId){
+          customer=readJSON('customers.json',[]).find(x=>x.id===a.session.customerId)||null;
+          if(customer) customerOrders=loadOrders().filter(x=>x.customer_id===customer.id||(x.customer?.email&&x.customer.email.toLowerCase()===customer.email.toLowerCase())).map(x=>({id:x.id,status:x.status,total_inr:x.totals?.total_inr||0,created:x.created,payment:{method:x.payment?.method||null,paid:x.payment?.paid===true},shiprocket_awb:x.shiprocket_awb||null,shiprocket_courier:x.shiprocket_courier||null,shipping_status:x.shipping_status||null,fulfillment_state:x.fulfillment_state||null,items:(x.items||[]).map(i=>({id:i.id,name:i.name,qty:i.qty,price_inr:i.price_inr||0}))})).reverse();
+        }
+        const intent=detectSupportIntent(String(b.message||''));
+        const conversation=prior.map(x=>({role:x.role,content:x.content}));
+        let context={channel,public_products:publicProducts,payment_configuration:{online_enabled:paymentsReady,cod_enabled:loadSiteConfig().features?.cod!==false},customer:customer?{name:customer.name}:null,customer_orders:customerOrders,conversation};
+        if(a?.session?.admin===true){
+          context.orders=loadOrders().map(x=>({id:x.id,status:x.status,total_inr:x.totals?.total_inr,created:x.created,items:(x.items||[]).map(i=>({id:i.id,name:i.name,qty:i.qty}))}));
+          if(/marketing|offer|customer|campaign/i.test(String(b.task||'')+' '+String(b.message||''))){
+            try{context.customer_marketing_intelligence=await buildCustomerMarketingIntelligence(30)}catch(e){context.customer_marketing_intelligence={customers:[],error:e.message}}
+          }
+        }
+        await appendAIMessage(conversationId,'user',String(b.message||''),{intent,metadata:{channel}});
         const result=await askAI(String(b.message||''),context,String(b.task||'customer_support'));
         const reply=String(result.reply||'');
         const escalate=/(human support|support ticket|cannot verify|not documented|payment dispute)/i.test(reply);
-        await recordSupportInteraction({customerId:a?.session?.customerId||null,sessionId:b.session_id||null,channel,intent,question:b.message,answer:reply,escalated:escalate});
-        return json(res,200,{...result,intent,escalated:escalate});
-      }catch(e){return json(res,502,{configured:true,error:e.message})}
+        await appendAIMessage(conversationId,'assistant',reply,{intent,escalated:escalate});
+        await recordSupportInteraction({customerId:a?.session?.customerId||null,sessionId:sessionId,channel,intent,question:b.message,answer:reply,escalated:escalate});
+        return json(res,200,{...result,intent,escalated:escalate,conversation_id:conversationId,messages:(await getAIMessages(conversationId,20)).slice(-20)});
+      }catch(e){return json(res,502,{configured:true,error:e.message,conversation_id:conversationId||null})}
     }
 
     /* ---------------- public analytics / support ---------------- */
@@ -1700,7 +1934,28 @@ const server = http.createServer(async (req, res) => {
       }catch(e){return json(res,401,{error:e.message})}
     }
 
-      if (p === '/api/orders/return' && req.method === 'POST') {
+      if (p === '/api/orders/review' && req.method === 'POST') {
+      const a=getAuth(req),b=await readBody(req);
+      if(!a?.session?.customerId)return json(res,401,{error:'login required'});
+      if(!supabaseReady)return json(res,503,{error:'Supabase required'});
+      const orderId=String(b.order_id||''),productId=String(b.product_id||''),rating=Math.floor(Number(b.rating||0)),review=String(b.review||'').trim();
+      if(!orderId||!productId||rating<1||rating>5||review.length<3)return json(res,400,{error:'order_id, product_id, rating (1-5) and review are required'});
+      const o=loadOrders().find(x=>x.id===orderId&&x.customer_id===a.session.customerId&&x.status==='DELIVERED');
+      if(!o)return json(res,403,{error:'Only your delivered orders can be reviewed'});
+      if(!(o.items||[]).some(i=>i.id===productId))return json(res,400,{error:'Product was not part of this order'});
+      const id='REV-'+crypto.randomBytes(8).toString('hex');
+      try{
+        await supabaseRequest('customer_reviews',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([{id,order_id:orderId,customer_id:a.session.customerId,product_id:productId,rating,review,status:'PENDING',created_at:new Date().toISOString(),updated_at:new Date().toISOString()}])});
+      }catch(e){return json(res,409,{error:'A review for this order and product may already exist.'})}
+      return json(res,201,{ok:true,id,status:'PENDING'});
+    }
+
+    if (p.startsWith('/api/products/') && p.endsWith('/reviews') && req.method === 'GET') {
+      const productId=decodeURIComponent(p.slice('/api/products/'.length,-'/reviews'.length));
+      try{return json(res,200,await listPublishedReviews(productId))}catch(e){return json(res,503,{error:e.message})}
+    }
+
+    if (p === '/api/orders/return' && req.method === 'POST') {
         const a=getAuth(req);const b=await readBody(req);if(!a?.session?.customerId)return json(res,401,{error:'login required'});
         if(!supabaseReady)return json(res,503,{error:'Supabase required'});
         const orders=loadOrders(),o=orders.find(x=>x.id===String(b.order_id||'')&&(x.customer_id===a.session.customerId||x.customer?.email===a.session.email));
@@ -1830,6 +2085,61 @@ const server = http.createServer(async (req, res) => {
         const b=await readBody(req),customer={phone:b.phone,email:b.email},msg=String(b.message||'BBest Globly notification test');
         try{return json(res,200,{ok:true,results:await notifyCustomer(customer,msg)})}catch(e){return json(res,503,{error:e.message})}
       }
+      if (p === '/api/admin/indiamart/leads' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,[]);
+        const status=url.searchParams.get('status'),limit=Math.min(200,Math.max(1,Number(url.searchParams.get('limit')||100)));
+        let q='indiamart_leads?select=*&order=updated_at.desc&limit='+limit;if(status)q+='&status=eq.'+encodeURIComponent(status);
+        const rows=await supabaseRequest(q);return json(res,200,Array.isArray(rows)?rows:[]);
+      }
+      if (p === '/api/admin/indiamart/sync' && req.method === 'POST') {
+        if(!roleAllows(adminRole,['owner','manager']))return json(res,403,{error:'Manager role required'});
+        try{return json(res,200,{ok:true,...await syncIndiaMartLeads((await readBody(req)).hours||24)})}catch(e){return json(res,503,{error:e.message})}
+      }
+      if (p === '/api/admin/research/snapshots' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,[]);
+        const rows=await supabaseRequest('research_snapshots?select=id,query,provider,status,data,fetched_at&order=fetched_at.desc&limit=100');return json(res,200,Array.isArray(rows)?rows:[]);
+      }
+      if (p === '/api/admin/marketing/campaigns' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,[]);
+        const rows=await supabaseRequest('marketing_campaigns?select=*&order=updated_at.desc&limit=100');return json(res,200,Array.isArray(rows)?rows:[]);
+      }
+      if (p === '/api/admin/marketing/campaigns' && req.method === 'POST') {
+        const b=await readBody(req);if(!supabaseReady)return json(res,503,{error:'Supabase required'});
+        const approval=await createAgentApprovals([{action_type:'create_campaign',payload:b,reason:'Campaign publication/spend remains owner approved.',status:'PENDING'}]);
+        return json(res,201,{ok:true,approval_id:approval[0]?.id||null,status:'PENDING_APPROVAL'});
+      }
+      if (p.startsWith('/api/admin/marketing/campaigns/') && req.method === 'PATCH') {
+        const id=decodeURIComponent(p.slice('/api/admin/marketing/campaigns/'.length)),b=await readBody(req);
+        if(!supabaseReady)return json(res,503,{error:'Supabase required'});
+        const patch={updated_at:new Date().toISOString()};
+        for(const k of ['name','channel','objective','status'])if(b[k]!==undefined)patch[k]=String(b[k]).slice(0,200);
+        if(b.budget_inr!==undefined)patch.budget_inr=Math.max(0,Number(b.budget_inr||0));
+        if(Array.isArray(b.product_ids))patch.product_ids=b.product_ids.slice(0,100);
+        if(b.creative&&typeof b.creative==='object')patch.creative=b.creative;
+        await supabaseRequest('marketing_campaigns?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify(patch)});
+        await auditAdmin(adminRole,'UPDATE_CAMPAIGN','campaign',id,patch);return json(res,200,{ok:true,id,...patch});
+      }
+      if (p === '/api/admin/customer-reviews' && req.method === 'GET') {
+        if(!supabaseReady)return json(res,200,[]);
+        const rows=await supabaseRequest('customer_reviews?select=*&order=created_at.desc&limit=200');return json(res,200,Array.isArray(rows)?rows:[]);
+      }
+      if (p.startsWith('/api/admin/customer-reviews/') && req.method === 'PATCH') {
+        if(!supabaseReady)return json(res,503,{error:'Supabase required'});
+        const id=decodeURIComponent(p.slice('/api/admin/customer-reviews/'.length)),b=await readBody(req);
+        const patch={updated_at:new Date().toISOString()};
+        if(!['PENDING','PUBLISHED','REJECTED'].includes(String(b.status||'')))return json(res,400,{error:'invalid review status'});
+        patch.status=String(b.status);if(patch.status==='PUBLISHED')patch.published_at=new Date().toISOString();
+        await supabaseRequest('customer_reviews?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify(patch)});
+        await auditAdmin(adminRole,'MODERATE_REVIEW','customer_review',id,patch);return json(res,200,{ok:true,id,...patch});
+      }
+      if (p === '/api/admin/knowledge/reindex' && req.method === 'POST') {
+        if(!roleAllows(adminRole,['owner','manager']))return json(res,403,{error:'Manager role required'});
+        try{knowledgeSeededAt=0;await ensureKnowledgeBase(true);return json(res,200,{ok:true,indexed:knowledgeDocuments().length,vector_enabled:!!(EMBEDDING_API_URL&&EMBEDDING_API_KEY)})}catch(e){return json(res,503,{error:e.message})}
+      }
+      if (p === '/api/admin/knowledge/search' && req.method === 'POST') {
+        const b=await readBody(req);try{return json(res,200,{results:await retrieveKnowledge(String(b.query||''),null,Number(b.limit||10))})}catch(e){return json(res,503,{error:e.message})}
+      }
+
       if (p === '/api/admin/returns' && req.method === 'GET') {
         if(!supabaseReady)return json(res,200,[]);
         const rows=await supabaseRequest('returns?select=*&order=updated_at.desc&limit=200');return json(res,200,Array.isArray(rows)?rows:[]);
@@ -1888,8 +2198,11 @@ const server = http.createServer(async (req, res) => {
           suppliers:{configured:supabaseReady,registry:true},
           notifications:{whatsapp:!!WHATSAPP_TOKEN&&!!WHATSAPP_PHONE_NUMBER_ID,sms:!!TWILIO_ACCOUNT_SID,email:gmailOtpReady},
           refunds:{razorpay:RZP_REFUND_READY},
-          research:{configured:!!(RESEARCH_API_URL&&RESEARCH_API_KEY)},
-          ads:{configured:!!(AD_SPEND_API_URL&&AD_SPEND_API_KEY)},
+          research:{configured:!!(RESEARCH_API_URL&&RESEARCH_API_KEY),snapshots:true},
+          ads:{configured:!!(AD_SPEND_API_URL&&AD_SPEND_API_KEY),campaign_store:true},
+          indiamart:{configured:!!INDIAMART_CRM_KEY,lead_manager:true},
+          knowledge:{configured:supabaseReady,keyword_search:supabaseReady,vector_ready:!!(EMBEDDING_API_URL&&EMBEDDING_API_KEY)},
+          reviews:{configured:supabaseReady,moderation:true},
           security:{two_factor:ADMIN_2FA_REQUIRED,role_based:true},
           quality:{
             training_seed_count:Array.isArray(readJSON('ai_training_seed.json',[]))?readJSON('ai_training_seed.json',[]).length:0,
@@ -2147,6 +2460,13 @@ const server = http.createServer(async (req, res) => {
             const sendResult=await sendMarketingOffer(customer,{...row,product_name:product?.name||null});
             await auditAdmin('admin','SEND_PERSONALIZED_OFFER','customer',customerId,{offer_id:id,product_id:productId||null,send_result:sendResult});
             result={ok:true,action:type,offer:row,send_result:sendResult};
+          } else if(type==='create_campaign' || type==='run_ad_campaign' || type==='publish_campaign'){
+            if(!supabaseReady)return json(res,503,{error:'Supabase is required for campaign persistence'});
+            const budget=Math.max(0,Number(payload.budget_inr||0));
+            if(['run_ad_campaign','publish_campaign'].includes(type) && budget>0 && !AD_SPEND_API_URL)return json(res,409,{error:'Paid campaign execution is not connected. Create the draft, then connect an ads execution provider.'});
+            const status=type==='create_campaign'?'DRAFT':'APPROVED_PENDING_CONNECTOR';
+            const campaign=await createMarketingCampaign(payload,approvalId,status);
+            result={ok:true,action:type,campaign};
           } else if(type==='create_offer'){
             const control=await getAgentControl('offers');
             const id=String(payload.id||('OFF-'+Date.now().toString(36).toUpperCase())).slice(0,50);
@@ -2365,6 +2685,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 hydrateSupabase().finally(() => {
-  server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v2.7 listening on http://0.0.0.0:' + PORT));
+  ensureKnowledgeBase().catch(e=>console.error('[knowledge bootstrap]',e.message));
+  server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v3.0 listening on http://0.0.0.0:' + PORT));
 });
 // Render deployment marker: current main is syntax-checked and ready.

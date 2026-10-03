@@ -1405,6 +1405,15 @@ async function retrieveKnowledge(query,visibility=null,limit=8){
       const rows=await supabaseRpc('search_knowledge_documents',{query_text:q,p_visibility:scope,match_count:Math.min(12,limit)});
       if(Array.isArray(rows))out.push(...rows.map(x=>({...x,source:'keyword'})));
     }catch(e){console.error('[knowledge search]',e.message)}
+    if(EMBEDDING_API_URL&&EMBEDDING_API_KEY){
+      try{
+        const emb=await embedText(q);
+        if(emb){
+          const rows=await supabaseRpc('match_knowledge_documents',{query_embedding:emb,match_threshold:0.20,match_count:Math.min(12,limit),p_visibility:scope});
+          if(Array.isArray(rows))out.push(...rows.map(x=>({...x,source:'vector',rank:Number(x.similarity||0)})));
+        }
+      }catch(e){console.error('[knowledge vector search]',e.message)}
+    }
   }
   const seen=new Set();
   return out.filter(x=>{if(seen.has(x.id))return false;seen.add(x.id);return true}).sort((a,b)=>Number(b.rank||0)-Number(a.rank||0)).slice(0,limit);
@@ -1478,6 +1487,7 @@ async function syncIndiaMartLeads(hours=24){
   const end=new Date(),start=new Date(end.getTime()-Math.max(1,Math.min(72,Number(hours||24)))*3600000);
   const u=new URL(INDIAMART_API_URL);
   u.searchParams.set('glusr_crm_key',INDIAMART_CRM_KEY);
+  if(INDIAMART_GLID)u.searchParams.set('glusr_usr_id',INDIAMART_GLID);
   u.searchParams.set('start_time',indiaMartTime(start));
   u.searchParams.set('end_time',indiaMartTime(end));
   const d=await externalJson(u.toString(),{headers:{'Accept':'application/json'}});
@@ -1730,7 +1740,7 @@ const server = http.createServer(async (req, res) => {
       const a = getAuth(req), b = await readBody(req), channel = String(b.channel || 'website');
       if (channel !== 'website' && (!a || a.session.admin !== true)) return json(res,401,{error:'admin authentication required'});
       const sessionId=String(b.session_id||req.headers['x-ai-session-id']||'').trim().slice(0,100)||null;
-      const authForConversation={headers:{'x-ai-session-id':sessionId},...req};
+      const authForConversation={...req,headers:{...req.headers,'x-ai-session-id':sessionId}};
       let conversationId=String(b.conversation_id||'').trim();
       try{
         if(conversationId){
@@ -2094,6 +2104,17 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/admin/indiamart/sync' && req.method === 'POST') {
         if(!roleAllows(adminRole,['owner','manager']))return json(res,403,{error:'Manager role required'});
         try{return json(res,200,{ok:true,...await syncIndiaMartLeads((await readBody(req)).hours||24)})}catch(e){return json(res,503,{error:e.message})}
+      }
+      if (p.startsWith('/api/admin/indiamart/leads/') && req.method === 'PATCH') {
+        if(!roleAllows(adminRole,['owner','manager','support']))return json(res,403,{error:'Lead management role required'});
+        if(!supabaseReady)return json(res,503,{error:'Supabase required'});
+        const id=decodeURIComponent(p.slice('/api/admin/indiamart/leads/'.length)),b=await readBody(req);
+        const allowed=['NEW','CONTACTED','QUALIFIED','CONVERTED','CLOSED'];
+        if(!allowed.includes(String(b.status||'')))return json(res,400,{error:'invalid lead status'});
+        const patch={status:String(b.status),updated_at:new Date().toISOString()};
+        await supabaseRequest('indiamart_leads?id=eq.'+encodeURIComponent(id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify(patch)});
+        await auditAdmin(adminRole,'UPDATE_INDIAMART_LEAD','indiamart_lead',id,patch);
+        return json(res,200,{ok:true,id,...patch});
       }
       if (p === '/api/admin/research/snapshots' && req.method === 'GET') {
         if(!supabaseReady)return json(res,200,[]);

@@ -1,0 +1,77 @@
+{
+  "version": "1.0.0",
+  "name": "BBest Globly AI Operating System",
+  "autonomy": {
+    "auto": [
+      "faq",
+      "order_tracking",
+      "customer_support_common",
+      "product_copy_update",
+      "small_price_change_within_margin_floor"
+    ],
+    "limited_auto": [
+      "discount_within_limit",
+      "refund_within_limit",
+      "small_merchandising_change"
+    ],
+    "owner_approval": [
+      "new_supplier",
+      "large_discount",
+      "large_refund",
+      "bulk_publish",
+      "product_delete",
+      "major_price_change",
+      "margin_floor_change",
+      "paid_ads",
+      "public_site_redesign"
+    ]
+  },
+  "agents": {
+    "order": "payment verification, risk/COD checks, order status, tracking and exception alerts",
+    "supplier": "supplier scorecards, stock checks, routing and backup supplier recommendations",
+    "product_research": "demand, competition, seasonality, margin and product lifecycle research",
+    "catalog": "product import, title, description, SEO, category, image checks and publishing proposals",
+    "pricing": "cost, shipping, gateway fee, GST, return reserve and target-margin pricing",
+    "offers": "discounts, coupons, festival sales, abandoned-cart offers and bundles with margin simulation",
+    "growth_marketing": "trend research, SEO, campaigns, customer segments, WhatsApp/email and ad performance",
+    "support": "Hindi/English/Hinglish customer support, verified store data and human handoff",
+    "finance": "profit/loss, refunds, supplier payouts and reconciliation",
+    "owner_assistant": "business reports, charts, decisions and explanations for the owner"
+  },
+  "order_workflow": [
+    "payment_verify",
+    "risk_check",
+    "cod_confirmation",
+    "stock_check",
+    "supplier_route",
+    "tracking_notify",
+    "delay_alert",
+    "return_window",
+    "review_request",
+    "supplier_payout_profit"
+  ],
+  "quality": {
+    "target_policy_accuracy_pct": 95,
+    "target_handoff_pct": 100,
+    "zero_hard_limit_violations": true,
+    "prompt_injection_tests_required": true,
+    "reviewed_chats_weekly": 20,
+    "monthly_knowledge_refresh": true,
+    "test_before_model_or_instruction_switch": true
+  },
+  "security": {
+    "customer_ai_admin_power": false,
+    "secrets_exposed_to_ai": false,
+    "card_data_stored": false,
+    "audit_every_state_change": true,
+    "data_minimization": true,
+    "human_handoff_for": [
+      "angry",
+      "legal",
+      "security",
+      "privacy",
+      "health",
+      "complex_refund"
+    ]
+  }
+}

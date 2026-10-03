@@ -170,7 +170,7 @@ const DEFAULT_AGENT_CONTROLS = {
   supplier:{id:'supplier',label:'Supplier Agent',enabled:true,mode:'APPROVAL_ONLY',min_margin_pct:25,max_discount_pct:0,max_refund_inr:0},
   research:{id:'research',label:'Product Research Agent',enabled:true,mode:'APPROVAL_ONLY',min_margin_pct:25,max_discount_pct:10,max_refund_inr:0},
   catalog:{id:'catalog',label:'Catalog Agent',enabled:true,mode:'APPROVAL_ONLY',min_margin_pct:25,max_discount_pct:10,max_refund_inr:0},
-  pricing:{id:'pricing',label:'Pricing & Margin Agent',enabled:true,mode:'APPROVAL_ONLY',min_margin_pct:25,max_discount_pct:10,max_refund_inr:0},
+  pricing:{id:'pricing',label:'Pricing & Margin Agent',enabled:true,mode:'LIMITED_AUTO',min_margin_pct:25,max_discount_pct:10,max_refund_inr:0},
   offers:{id:'offers',label:'Offers Agent',enabled:true,mode:'APPROVAL_ONLY',min_margin_pct:25,max_discount_pct:10,max_refund_inr:500},
   support:{id:'support',label:'Support Agent',enabled:true,mode:'AUTO',min_margin_pct:0,max_discount_pct:0,max_refund_inr:500},
   finance:{id:'finance',label:'Finance Agent',enabled:true,mode:'AUTO',min_margin_pct:0,max_discount_pct:0,max_refund_inr:0},
@@ -1192,10 +1192,29 @@ async function agentCommand(command) {
     ? parsed.actions.map(a=>({...a,requiresApproval:true})).slice(0,5)
     : [];
   const planned=[];
+  const autoPlanned=[];
+  function isAutoSafeAction(a, control){
+    if(!a || control?.mode!=='LIMITED_AUTO') return false;
+    if(a.type!=='update_product' || !a.payload?.id) return false;
+    const allowed=['tagline','description','features','badges'];
+    const keys=Object.keys(a.payload).filter(k=>k!=='id');
+    if(keys.length===0 || keys.some(k=>!allowed.includes(k) && k!=='price_inr')) return false;
+    if(keys.includes('price_inr')){
+      const catalog=loadCatalog(), p=catalog.find(x=>x.id===a.payload.id);
+      if(!p) return false;
+      const oldPrice=Number(p.price_inr||0), nextPrice=Number(a.payload.price_inr||0);
+      if(oldPrice<=0 || nextPrice<=0 || Math.abs(nextPrice-oldPrice)/oldPrice>0.05) return false;
+    }
+    return true;
+  }
   for(const a of proposed){
     try{
-      await assertAgentActionAllowed(a.type);
-      planned.push(a);
+      const control=await assertAgentActionAllowed(a.type);
+      if(isAutoSafeAction(a,control)){
+        autoPlanned.push({...a,requiresApproval:false,autoExecute:true});
+      } else {
+        planned.push({...a,requiresApproval:true,autoExecute:false});
+      }
     }catch(e){
       await logAgent('system', command, {blocked_action:a.type,reason:e.message});
     }
@@ -1208,7 +1227,8 @@ async function agentCommand(command) {
   const result = {
     configured:true,
     reply:String(parsed.reply||'Agent plan ready.'),
-    actions
+    actions,
+    autoActions:autoPlanned
   };
   await logAgent('owner', command, result);
   return result;

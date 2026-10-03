@@ -19,7 +19,7 @@ async function api(path,opt={}){
 }
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function money(n){return '₹'+Number(n||0).toLocaleString('en-IN')}
 async function refresh(){[products,orders,customers]=await Promise.all([api('/api/admin/products'),api('/api/admin/orders'),api('/api/admin/customers')])}
-function setView(v){currentView=v;$$('.view').forEach(x=>x.classList.toggle('hidden',x.id!==v));$$('.nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.view===v));const t={overview:'Business Overview',products:'Product Management',orders:'Orders',customers:'Customers',suppliers:'Supplier / Dropshipping',leads:'IndiaMART Leads',research:'AI Product Research',pricing:'Pricing & Offers',marketing:'AI Marketing',seo:'AI SEO Manager',support:'Customer Support',reviews:'Customer Reviews',finance:'Finance & Profit',controls:'AI Control Center',quality:'AI Training & Quality',security:'Security & Audit',approvals:'Approval Center'};$('#pageTitle').textContent=t[v]||'Business Overview';render()}
+function setView(v){currentView=v;$('.view').forEach(x=>x.classList.toggle('hidden',x.id!==v));$('.nav-btn').forEach(x=>x.classList.toggle('active',x.dataset.view===v));const t={overview:'Business Overview',products:'Product Management',orders:'Orders',customers:'Customers',suppliers:'Supplier / Dropshipping',leads:'IndiaMART Leads',research:'AI Product Research',pricing:'Pricing & Offers',marketing:'AI Marketing',seo:'AI SEO Manager',support:'Customer Support',reviews:'Customer Reviews',finance:'Finance & Profit',controls:'AI Control Center',quality:'AI Training & Quality',security:'Security & Audit',approvals:'Approval Center'};$('#pageTitle').textContent=t[v]||'Business Overview';render()}
 function render(){if(!token)return;if(currentView==='overview')overview();if(currentView==='products')productView();if(currentView==='orders')orderView();if(currentView==='customers')customerView();if(currentView==='suppliers')supplierView();if(currentView==='leads')leadsView();if(currentView==='research')researchView();if(currentView==='pricing')pricingView();if(currentView==='marketing')marketingView();if(currentView==='seo')seoView();if(currentView==='support')supportView();if(currentView==='reviews')reviewsView();if(currentView==='finance')financeView();if(currentView==='controls')controlsView();if(currentView==='quality')qualityView();if(currentView==='security')securityView();if(currentView==='approvals')approvalView()}
 async function overview(){
   const active=orders.filter(o=>o.status!=="CANCELLED");
@@ -93,7 +93,7 @@ function renderAgentActions(actions){
     return '<div class="agent-action" id="agentAction'+i+'"><strong>Approval required</strong><div class="agent-type">'+esc(a.type||'action')+'</div><div class="muted">'+esc(a.reason||'Owner approval required')+'</div><pre>'+esc(JSON.stringify(a.payload||{},null,2))+'</pre><div class="actions"><button class="btn primary agent-approve" data-index="'+i+'">Approve & Execute</button><button class="btn danger agent-reject" data-index="'+i+'">Reject</button></div></div>';
   }).join('');
   box.insertAdjacentHTML('beforeend',cards);
-  $$$('#aiHistory .agent-approve').forEach(btn=>btn.onclick=async()=>{
+  $$('#aiHistory .agent-approve').forEach(btn=>btn.onclick=async()=>{
     const idx=Number(btn.dataset.index), action=actions[idx]; btn.disabled=true; btn.textContent='Executing…';
     try{
       const d=await api('/api/admin/agent/execute',{method:'POST',body:{approval_id:action.approvalId}});
@@ -102,7 +102,7 @@ function renderAgentActions(actions){
       await refresh(); if(currentView!=='approvals') setView(currentView);
     }catch(e){btn.disabled=false;btn.textContent='Approve & Execute';alert(e.message)}
   });
-  $$$('#aiHistory .agent-reject').forEach(btn=>btn.onclick=async()=>{
+  $$('#aiHistory .agent-reject').forEach(btn=>btn.onclick=async()=>{
     const idx=Number(btn.dataset.index), action=actions[idx]; btn.disabled=true; btn.textContent='Rejecting…';
     try{
       await api('/api/admin/approvals/'+encodeURIComponent(action.approvalId)+'/reject',{method:'POST'});
@@ -162,7 +162,7 @@ async function askAI(command){
   }
 }
 
-function productView(){let rows=products.map(p=>'<div class="product-row"><img src="'+esc(p.img||'')+'" alt=""><div><strong>'+esc(p.name)+'</strong><div class="muted">'+esc(p.category||'')+' · '+money(p.price_inr)+'</div><span class="badge">'+esc((p.badges||[])[0]||'Product')+'</span>'+(p.supplier?'<div class="muted">Supplier: '+esc(p.supplier)+(p.supplier_sku?' · SKU '+esc(p.supplier_sku):'')+'</div>':'')+'</div><div class="actions"><button class="btn soft edit" data-id="'+esc(p.id)+'">Edit</button><button class="btn danger del" data-id="'+esc(p.id)+'">Delete</button></div></div>').join('');$('#products').innerHTML='<div class="section-card"><div class="section-head"><div><h2>Products</h2><div class="muted">'+products.length+' products</div></div><button class="btn primary" id="newProduct">+ Add Product</button></div>'+rows+'</div>';$('#newProduct').onclick=()=>openProductModal();$$$('#products .edit').forEach(b=>b.onclick=()=>openProductModal(products.find(p=>p.id===b.dataset.id)));$$$('#products .del').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.id))}
+function productView(){let rows=products.map(p=>'<div class="product-row"><img src="'+esc(p.img||'')+'" alt=""><div><strong>'+esc(p.name)+'</strong><div class="muted">'+esc(p.category||'')+' · '+money(p.price_inr)+'</div><span class="badge">'+esc((p.badges||[])[0]||'Product')+'</span>'+(p.supplier?'<div class="muted">Supplier: '+esc(p.supplier)+(p.supplier_sku?' · SKU '+esc(p.supplier_sku):'')+'</div>':'')+'</div><div class="actions"><button class="btn soft edit" data-id="'+esc(p.id)+'">Edit</button><button class="btn danger del" data-id="'+esc(p.id)+'">Delete</button></div></div>').join('');$('#products').innerHTML='<div class="section-card"><div class="section-head"><div><h2>Products</h2><div class="muted">'+products.length+' products</div></div><button class="btn primary" id="newProduct">+ Add Product</button></div>'+rows+'</div>';$('#newProduct').onclick=()=>openProductModal();$$('#products .edit').forEach(b=>b.onclick=()=>openProductModal(products.find(p=>p.id===b.dataset.id)));$$('#products .del').forEach(b=>b.onclick=()=>deleteProduct(b.dataset.id))}
 function openProductModal(p){const edit=!!p,m=document.createElement('div');m.className='modal';m.innerHTML='<div class="modal-card"><button class="close">✕</button><h2>'+(edit?'Edit':'Add')+' Product</h2><div class="form-grid"><div><label>Name</label><input id="pn" value="'+esc(p?.name||'')+'"></div><div><label>Category</label><input id="pc" value="'+esc(p?.category||'')+'"></div><div><label>Price (INR)</label><input id="pp" type="number" value="'+Number(p?.price_inr||0)+'"></div><div><label>Compare at</label><input id="px" type="number" value="'+Number(p?.compare_at_inr||0)+'"></div><div class="full"><label>Image URL/path</label><input id="pi" value="'+esc(p?.img||'img/p1.svg')+'"></div><div class="full"><label>Tagline</label><input id="pt" value="'+esc(p?.tagline||'')+'"></div><div class="full"><label>Description</label><textarea id="pd" rows="4">'+esc(p?.description||'')+'</textarea></div><div class="full"><label>Features (one per line)</label><textarea id="pf" rows="4">'+esc((p?.features||[]).join('\n'))+'</textarea></div><div><label>Badge</label><input id="pb" value="'+esc((p?.badges||[])[0]||'New')+'"></div><div><label>SKU</label><input id="ps" value="'+esc(p?.sku||'')+'"></div><div><label>Supplier</label><input id="psup" placeholder="Qikink" value="'+esc(p?.supplier||'')+'"></div><div><label>Supplier SKU</label><input id="psku" value="'+esc(p?.supplier_sku||'')+'" placeholder="Used for supplier fulfillment"></div><div><label>Supplier Cost (INR)</label><input id="pcost" type="number" value="'+Number(p?.supplier_cost_inr||0)+'"></div></div><div class="actions" style="margin-top:14px"><button id="saveP" class="btn primary">'+(edit?'Save changes':'Create product')+'</button><button id="cancelP" class="btn">Cancel</button></div><p id="perr" class="error"></p></div>';document.body.appendChild(m);const close=()=>m.remove();$('.close',m).onclick=close;$('#cancelP',m).onclick=close;$('#saveP',m).onclick=async()=>{const body={name:$('#pn',m).value,category:$('#pc',m).value,price_inr:Number($('#pp',m).value),compare_at_inr:Number($('#px',m).value)||0,img:$('#pi',m).value,tagline:$('#pt',m).value,description:$('#pd',m).value,features:$('#pf',m).value.split(/\n+/).map(x=>x.trim()).filter(Boolean),badges:[$('#pb',m).value||'New'],sku:$('#ps',m).value.trim(),supplier:$('#psup',m).value.trim(),supplier_sku:$('#psku',m).value.trim(),supplier_cost_inr:Number($('#pcost',m).value)||0};try{await api(edit?'/api/admin/products/'+encodeURIComponent(p.id):'/api/admin/products',{method:edit?'PUT':'POST',body});await refresh();close();productView()}catch(e){$('#perr',m).textContent=e.message}}}
 async function deleteProduct(id){if(!confirm('Delete this product?'))return;try{await api('/api/admin/products/'+encodeURIComponent(id),{method:'DELETE'});await refresh();productView()}catch(e){alert(e.message)}}
 function orderView(){
@@ -173,8 +173,8 @@ function orderView(){
   }).join(''):'<tr><td colspan="5">No orders</td></tr>';
   $('#orders').innerHTML='<div class="section-card"><div class="section-head"><h2>Orders</h2><button id="refreshOrders" class="btn soft">Refresh</button></div><div class="table-wrap"><table class="tbl"><thead><tr><th>Order</th><th>Customer</th><th>Total</th><th>Status</th><th>Fulfillment</th></tr></thead><tbody>'+rows+'</tbody></table></div></div>';
   $('#refreshOrders').onclick=async()=>{await refresh();orderView()};
-  $$$('#orders select').forEach(s=>s.onchange=async()=>{try{await api('/api/admin/order-status',{method:'POST',body:{id:s.dataset.order,status:s.value}});await refresh();orderView()}catch(e){alert(e.message)}});
-  $$$('#orders .ship-order').forEach(b=>b.onclick=async()=>{
+  $$('#orders select').forEach(s=>s.onchange=async()=>{try{await api('/api/admin/order-status',{method:'POST',body:{id:s.dataset.order,status:s.value}});await refresh();orderView()}catch(e){alert(e.message)}});
+  $$('#orders .ship-order').forEach(b=>b.onclick=async()=>{
     if(!confirm('Create the Shiprocket shipment and try to assign an AWB for this order?'))return;
     b.disabled=true;b.textContent='Creating…';
     try{const r=await api('/api/admin/fulfillment/ship/'+encodeURIComponent(b.dataset.id),{method:'POST'});toast(r.awb?'Shipment created · AWB '+r.awb:'Shiprocket order created');await refresh();orderView()}catch(e){b.disabled=false;b.textContent='Create Shipment';alert(e.message)}
@@ -216,7 +216,7 @@ async function financeView(){
     try{
       const rows=await api("/api/admin/returns");
       $("#returnsList").innerHTML=rows.length?'<table class="tbl"><thead><tr><th>Return</th><th>Order</th><th>Reason</th><th>Status</th><th>Action</th></tr></thead><tbody>'+rows.map(x=>'<tr><td>'+esc(x.id)+'</td><td>'+esc(x.order_id)+'</td><td>'+esc(x.reason||'')+'</td><td>'+esc(x.status)+'</td><td><select class="ret-status" data-id="'+esc(x.id)+'">'+['REQUESTED','APPROVED','REJECTED','RECEIVED','REFUNDED','CLOSED'].map(s=>'<option '+(s===x.status?'selected':'')+'>'+s+'</option>').join('')+'</select></td></tr>').join('')+'</tbody></table>':'<div class="notice">No return requests.</div>';
-      $$$('.ret-status').forEach(s=>s.onchange=async e=>{try{await api('/api/admin/returns/'+encodeURIComponent(e.target.dataset.id),{method:'PATCH',body:{status:e.target.value}});await returns()}catch(err){alert(err.message)}});
+      $$('.ret-status').forEach(s=>s.onchange=async e=>{try{await api('/api/admin/returns/'+encodeURIComponent(e.target.dataset.id),{method:'PATCH',body:{status:e.target.value}});await returns()}catch(err){alert(err.message)}});
     }catch(e){$("#returnsList").innerHTML='<div class="notice">Returns unavailable: '+esc(e.message)+'</div>'}
   }
   async function ads(){
@@ -255,7 +255,7 @@ async function controlsView(){
       const rows=await api("/api/admin/agent-controls"),wrap=$("#controlRows");
       wrap.innerHTML=rows.map(r=>'<div class="control-row"><div><strong>'+esc(r.label)+'</strong><div class="muted">Margin floor '+Number(r.min_margin_pct).toFixed(0)+'% · Max discount '+Number(r.max_discount_pct).toFixed(0)+'% · Max refund '+money(r.max_refund_inr)+'</div></div><div class="control-fields"><label><input type="checkbox" class="c-enabled" data-id="'+esc(r.id)+'" '+(r.enabled?'checked':'')+'> Enabled</label><select class="c-mode" data-id="'+esc(r.id)+'"><option '+(r.mode==='AUTO'?'selected':'')+'>AUTO</option><option '+(r.mode==='LIMITED_AUTO'?'selected':'')+'>LIMITED_AUTO</option><option '+(r.mode==='APPROVAL_ONLY'?'selected':'')+'>APPROVAL_ONLY</option></select><input class="c-margin" data-id="'+esc(r.id)+'" type="number" min="0" max="100" value="'+Number(r.min_margin_pct)+'" aria-label="minimum margin"><input class="c-discount" data-id="'+esc(r.id)+'" type="number" min="0" max="100" value="'+Number(r.max_discount_pct)+'" aria-label="maximum discount"><input class="c-refund" data-id="'+esc(r.id)+'" type="number" min="0" value="'+Number(r.max_refund_inr)+'" aria-label="maximum refund"><button class="btn primary c-save" data-id="'+esc(r.id)+'">Save</button></div></div>').join('');
       const g=rows.find(x=>x.id==='global');$("#killState").textContent=g?.enabled?'Kill Switch OFF':'Kill Switch ON';$("#killState").className='badge '+(g?.enabled?'':'danger');
-      $$$('.c-save',wrap).forEach(btn=>btn.onclick=async()=>{
+      $$('.c-save',wrap).forEach(btn=>btn.onclick=async()=>{
         const id=btn.dataset.id;
         try{
           await api('/api/admin/agent-controls',{method:'PUT',body:{id,enabled:$('[data-id="'+id+'"].c-enabled',wrap).checked,mode:$('[data-id="'+id+'"].c-mode',wrap).value,min_margin_pct:Number($('[data-id="'+id+'"].c-margin',wrap).value),max_discount_pct:Number($('[data-id="'+id+'"].c-discount',wrap).value),max_refund_inr:Number($('[data-id="'+id+'"].c-refund',wrap).value)}});
@@ -307,7 +307,7 @@ async function leadsView(){
       const rows=await api('/api/admin/indiamart/leads');
       $('#leadState').textContent=rows.length?rows.length+' leads loaded.':'No leads found yet.';
       $('#leadTable').innerHTML=rows.length?'<table class="tbl"><thead><tr><th>Time</th><th>Contact</th><th>Product</th><th>Message</th><th>Status</th></tr></thead><tbody>'+rows.map(x=>'<tr><td>'+esc(x.query_time?new Date(x.query_time).toLocaleString('en-IN'):'—')+'</td><td><strong>'+esc(x.sender_name||'—')+'</strong><div class="muted">'+esc(x.sender_company||'')+' · '+esc(x.sender_city||'')+'</div></td><td>'+esc(x.product_name||x.category_name||'—')+'</td><td>'+esc(x.query_message||'').slice(0,260)+'</td><td><select class="lead-status" data-id="'+esc(x.id)+'">'+['NEW','CONTACTED','QUALIFIED','CONVERTED','CLOSED'].map(s=>'<option '+(s===x.status?'selected':'')+'>'+s+'</option>').join('')+'</select></td></tr>').join('')+'</tbody></table>':'<div class="notice">No IndiaMART leads available.</div>';
-      $$$('.lead-status','#leadTable').forEach(s=>s.onchange=async()=>{try{await api('/api/admin/indiamart/leads/'+encodeURIComponent(s.dataset.id),{method:'PATCH',body:{status:s.value}})}catch(e){alert(e.message);await load()}});
+      $$('.lead-status','#leadTable').forEach(s=>s.onchange=async()=>{try{await api('/api/admin/indiamart/leads/'+encodeURIComponent(s.dataset.id),{method:'PATCH',body:{status:s.value}})}catch(e){alert(e.message);await load()}});
     }catch(e){$('#leadState').textContent='IndiaMART unavailable: '+e.message}
   }
   $('#refreshLeads').onclick=load;
@@ -336,8 +336,8 @@ async function reviewsView(){
     try{
       const rows=await api('/api/admin/customer-reviews');
       $('#reviewTable').innerHTML=rows.length?'<table class="tbl"><thead><tr><th>Product</th><th>Rating</th><th>Review</th><th>Status</th><th>Action</th></tr></thead><tbody>'+rows.map(x=>'<tr><td>'+esc(products.find(p=>p.id===x.product_id)?.name||x.product_id)+'</td><td>'+esc(x.rating)+'/5</td><td>'+esc(x.review).slice(0,300)+'</td><td>'+esc(x.status)+'</td><td><div class="actions">'+(x.status==='PENDING'?'<button class="btn soft review-pub" data-id="'+esc(x.id)+'">Publish</button><button class="btn danger review-rej" data-id="'+esc(x.id)+'">Reject</button>':'—')+'</div></td></tr>').join('')+'</tbody></table>':'<div class="notice">No reviews yet.</div>';
-      $$$('.review-pub','#reviewTable').forEach(b=>b.onclick=()=>moderate(b.dataset.id,'PUBLISHED'));
-      $$$('.review-rej','#reviewTable').forEach(b=>b.onclick=()=>moderate(b.dataset.id,'REJECTED'));
+      $$('.review-pub','#reviewTable').forEach(b=>b.onclick=()=>moderate(b.dataset.id,'PUBLISHED'));
+      $$('.review-rej','#reviewTable').forEach(b=>b.onclick=()=>moderate(b.dataset.id,'REJECTED'));
     }catch(e){$('#reviewTable').innerHTML='<div class="notice">Review moderation unavailable: '+esc(e.message)+'</div>'}
   }
   async function moderate(id,status){try{await api('/api/admin/customer-reviews/'+encodeURIComponent(id),{method:'PATCH',body:{status}});await load()}catch(e){alert(e.message)}}
@@ -351,8 +351,8 @@ async function supportView(){
     try{
       const rows=await api("/api/admin/support/tickets");
       box.innerHTML=rows.length?rows.map(r=>'<div class="agent-action"><div class="section-head"><strong>'+esc(r.subject)+'</strong><span class="badge">'+esc(r.priority)+' · '+esc(r.status)+'</span></div><div class="muted">'+esc(r.customer_name||'Guest')+' · '+esc(r.customer_email||'no email')+(r.order_id?' · Order '+esc(r.order_id):'')+'</div><div style="margin-top:8px">'+(Array.isArray(r.messages)?r.messages.map(m=>'<div><strong>'+esc(m.role)+'</strong>: '+esc(m.content)+'</div>').join(''):'')+'</div><div class="actions" style="margin-top:10px"><select class="ticket-status" data-id="'+esc(r.id)+'">'+['OPEN','IN_PROGRESS','WAITING','RESOLVED','CLOSED'].map(x=>'<option '+(x===r.status?'selected':'')+'>'+x+'</option>').join('')+'</select><select class="ticket-priority" data-id="'+esc(r.id)+'">'+['LOW','NORMAL','HIGH','URGENT'].map(x=>'<option '+(x===r.priority?'selected':'')+'>'+x+'</option>').join('')+'</select></div></div>').join(''):'<div class="notice">No support tickets yet.</div>';
-      $$$('.ticket-status',box).forEach(s=>s.onchange=save);
-      $$$('.ticket-priority',box).forEach(s=>s.onchange=save);
+      $$('.ticket-status',box).forEach(s=>s.onchange=save);
+      $$('.ticket-priority',box).forEach(s=>s.onchange=save);
     }catch(e){box.innerHTML='<div class="notice">Support inbox unavailable: '+esc(e.message)+'</div>'}
   }
   async function save(e){
@@ -391,14 +391,14 @@ async function approvalView(){
         const pending=r.status==='PENDING';
         return '<div class="agent-action"><div class="section-head"><strong>'+esc(r.action_type)+'</strong><span class="badge">'+esc(r.status)+'</span></div><div class="muted">'+esc(r.reason||'Owner approval required')+'</div><pre>'+esc(JSON.stringify(r.payload||{},null,2))+'</pre><div class="actions">'+(pending?'<button class="btn primary approve-row" data-id="'+esc(r.id)+'">Approve & Execute</button><button class="btn danger reject-row" data-id="'+esc(r.id)+'">Reject</button>':'')+'</div></div>';
       }).join('');
-      $$$('.approve-row',box).forEach(btn=>btn.onclick=async()=>{
+      $$('.approve-row',box).forEach(btn=>btn.onclick=async()=>{
         btn.disabled=true;btn.textContent='Executing…';
         try{
           await api('/api/admin/agent/execute',{method:'POST',body:{approval_id:btn.dataset.id}});
           await load();await refresh();
         }catch(e){btn.disabled=false;btn.textContent='Approve & Execute';alert(e.message)}
       });
-      $$$('.reject-row',box).forEach(btn=>btn.onclick=async()=>{
+      $$('.reject-row',box).forEach(btn=>btn.onclick=async()=>{
         btn.disabled=true;btn.textContent='Rejecting…';
         try{await api('/api/admin/approvals/'+encodeURIComponent(btn.dataset.id)+'/reject',{method:'POST'});await load()}catch(e){btn.disabled=false;btn.textContent='Reject';alert(e.message)}
       });
@@ -409,7 +409,7 @@ async function approvalView(){
 }
 
 function initAISidePanel(){ /* AI Manager is rendered inside Approval Center. */ }
-$$$('.nav-btn').forEach(b=>b.onclick=()=>setView(b.dataset.view));
+$$('.nav-btn').forEach(b=>b.onclick=()=>setView(b.dataset.view));
 $('#forgotBtn').onclick=()=>{
   $('#resetPanel').classList.toggle('hidden');
   $('#resetEmail').focus();
@@ -476,7 +476,7 @@ function initGlobalSearch(){
         for(const o of orders)if((o.id+" "+(o.customer?.name||"")+" "+(o.customer?.email||"")).toLowerCase().includes(q))results.push('<button class="search-result" data-go-view="orders"><strong>Order</strong> · '+esc(o.id)+'<span>'+money(o.totals?.total_inr)+'</span></button>');
         for(const u of customers)if((u.name+" "+u.email+" "+u.phone).toLowerCase().includes(q))results.push('<button class="search-result" data-go-view="customers"><strong>Customer</strong> · '+esc(u.name)+'<span>'+money(u.spent_inr)+'</span></button>');
         $("#globalSearchResults").innerHTML=results.length?results.slice(0,20).join(''):'<div class="notice">No match found.</div>';
-        $$$('.search-result').forEach(x=>x.onclick=()=>{setView(x.dataset.goView);modal.remove()});
+        $$('.search-result').forEach(x=>x.onclick=()=>{setView(x.dataset.goView);modal.remove()});
       };
       modal.onclick=e=>{if(e.target===modal)modal.remove()};
     }

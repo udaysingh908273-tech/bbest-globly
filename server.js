@@ -1083,29 +1083,15 @@ function buildCustomerSupportKnowledge(){
 }
 
 async function buildCustomerMarketingIntelligence(days=30){
-  if(!supabaseReady) return {customers:[],note:'Supabase is required for customer intent analytics.'};
+  if(!supabaseReady)return {customers:[],note:'Supabase is required for customer intent analytics.'};
   const since=new Date(Date.now()-Math.max(1,Number(days||30))*86400000).toISOString();
-  const rows=await supabaseRequest('analytics_events?select=customer_id,event_name,product_id,metadata,created_at&customer_id=not.is.null&created_at=gte.'+encodeURIComponent(since)+'&order=created_at.desc&limit=5000');
+  const rows=await supabaseRequest('analytics_events?select=customer_id,event_name,product_id,metadata,created_at&customer_id=not.is.null&created_at=gte.'+encodeURIComponent(since)+'&order=created_at.desc&limit=5000);
   const customers=readJSON('customers.json',[]),products=loadCatalog(),orders=loadOrders(),byCustomer={};
-  for(const ev of (Array.isArray(rows)?rows:[])){
-    const cid=String(ev.customer_id||''); if(!cid)continue;
-    const c=byCustomer[cid]||(byCustomer[cid]={customer_id:cid,event_count:0,last_seen_at:null,product_scores:{},searches:[],add_to_cart:0,checkouts:0,views:0});
-    c.event_count++; if(!c.last_seen_at||new Date(ev.created_at)>new Date(c.last_seen_at))c.last_seen_at=ev.created_at;
-    if(ev.event_name==='product_view')c.views++; if(ev.event_name==='add_to_cart')c.add_to_cart++; if(ev.event_name==='checkout_start')c.checkouts++;
-    const pid=String(ev.product_id||''); if(pid){const score={purchase_success:5,checkout_start:4,add_to_cart:3,product_view:1}[ev.event_name]||0;c.product_scores[pid]=(c.product_scores[pid]||0)+score}
-    if(ev.event_name==='product_search'){const q=String(ev.metadata?.query||'').trim().slice(0,120);if(q)c.searches.push(q)}
-  }
-  const output=[];
-  for(const c of Object.values(byCustomer)){
-    const profile=customers.find(x=>x.id===c.customer_id);if(!profile)continue;
-    const mine=orders.filter(o=>o.customer_id===profile.id||(o.customer?.email&&String(o.customer.email).toLowerCase()===String(profile.email).toLowerCase()));
-    const top=Object.entries(c.product_scores).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([pid,score])=>{const p=products.find(x=>x.id===pid);return p?{product_id:pid,name:p.name,category:p.category,score,price_inr:Number(p.price_inr||0)}:null}).filter(Boolean);
-    output.push({customer_id:profile.id,name:profile.name,marketing_opt_in:profile.marketing_opt_in===true,order_count:mine.length,recent_spend_inr:mine.filter(o=>o.status!=='CANCELLED').reduce((n,o)=>n+Number(o.totals?.total_inr||0),0),intent:{score:Object.values(c.product_scores).reduce((n,v)=>n+Number(v||0),0),views:c.views,add_to_cart:c.add_to_cart,checkouts:c.checkouts,searches:[...new Set(c.searches)].slice(0,8)},top_interests:top,last_seen_at:c.last_seen_at,eligible_for_personalized_offer:profile.marketing_opt_in===true&&top.length>0});
-  }
-  output.sort((a,b)=>b.intent.score-a.intent.score);
-  return {period_days:Number(days||30),customers:output.slice(0,200),note:'Intent score uses product views, searches, carts, checkouts and purchases. It does not infer sensitive traits.'};
+  for(const ev of(Array.isArray(rows)?rows:[])){const cid=String(ev.customer_id||'');if(!cid)continue;const x=byCustomer[cid]||(byCustomer[cid]={customer_id:cid,event_count:0,last_seen_at:null,product_scores:{},searches:[],add_to_cart:0,checkouts:0,views:0});x.event_count++;if(!x.last_seen_at||new Date(ev.created_at)>new Date(x.last_seen_at))x.last_seen_at=ev.created_at;if(ev.event_name==='product_view')x.views++;if(ev.event_name==='add_to_cart')x.add_to_cart++;if(ev.event_name==='checkout_start')x.checkouts++;const pid=String(ev.product_id||'');if(pid){const score={purchase_success:5,checkout_start:4,add_to_cart:3,product_view:1}[ev.event_name]||0;x.product_scores[pid]=(x.product_scores[pid]||0)+score}if(ev.event_name==='product_search'){const q=String(ev.metadata?.query||'').trim().slice(0,120);if(q)x.searches.push(q);}}
+  const spendValues=customers.map(c=>orders.filter(o=>o.customer_id===c.id&&o.status!=='CANCELLED').reduce((s,o)=>s+Number(o.totals?.total_inr||0),0)).filter(x=>x>0).sort((a,b)=>a-b),q75=spendValues.length?spendValues[Math.floor((spendValues.length-1)*0.75)]:0,output=[];
+  for(const profile of customers){const x=byCustomer[profile.id]||{customer_id:profile.id,event_count:0,last_seen_at:profile.last_seen_at||null,product_scores:{},searches:[],add_to_cart:0,checkouts:0,views:0};const mine=orders.filter(o=>o.customer_id===profile.id||(o.customer?.email&&profile.email&&String(o.customer.email).toLowerCase()===String(profile.email).toLowerCase())),validOrders=mine.filter(o=>o.status!=='CANCELLED'),spend=validOrders.reduce((n,o)=>n+Number(o.totals?.total_inr||0),0),lastOrder=validOrders.map(o=>o.created).sort().slice(-1)[0]||null,lastSeen=x.last_seen_at||profile.last_seen_at||profile.last_login_at||profile.created||null,recencyDays=lastOrder?Math.max(0,Math.floor((Date.now()-new Date(lastOrder).getTime())/86400000)):null,activeDays=lastSeen?Math.max(0,Math.floor((Date.now()-new Date(lastSeen).getTime())/86400000)):null,top=Object.entries(x.product_scores).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([pid,score])=>{const p=products.find(z=>z.id===pid);return p?{product_id:pid,name:p.name,category:p.category,score,price_inr:Number(p.price_inr||0)}:null}).filter(Boolean),intentScore=Object.values(x.product_scores).reduce((n,v)=>n+Number(v||0),0);let segment='NO_PURCHASE';if(validOrders.length===0&&intentScore>=8)segment='HIGH_INTENT';else if(validOrders.length===0&&activeDays!==null&&activeDays<=7)segment='NEW';else if(validOrders.length>=2&&recencyDays!==null&&recencyDays<=45)segment='LOYAL';else if(spendValues.length&&spend>=q75&&q75>0)segment='HIGH_VALUE';else if(recencyDays!==null&&recencyDays>=91)segment='DORMANT';else if(recencyDays!==null&&recencyDays>=46)segment='AT_RISK';else if(validOrders.length>0)segment='ACTIVE';output.push({customer_id:profile.id,name:profile.name||'',email:profile.email||'',phone:profile.phone||'',phone_verified:!!profile.phone_verified_at,marketing_opt_in:profile.marketing_opt_in===true,marketing_email_opt_in:profile.marketing_email_opt_in===true,marketing_sms_opt_in:profile.marketing_sms_opt_in===true,marketing_whatsapp_opt_in:profile.marketing_whatsapp_opt_in===true,preferred_marketing_channel:profile.preferred_marketing_channel||null,order_count:validOrders.length,total_spend_inr:spend,last_order_at:lastOrder,last_seen_at:lastSeen,lifecycle_segment:segment,intent:{score:intentScore,views:x.views,add_to_cart:x.add_to_cart,checkouts:x.checkouts,searches:[...new Set(x.searches)].slice(0,8)},top_interests:top,eligible_for_personalized_offer:profile.marketing_opt_in===true&&top.length>0&&((profile.marketing_whatsapp_opt_in&&profile.phone_verified_at)||(profile.marketing_sms_opt_in&&profile.phone_verified_at)||profile.marketing_email_opt_in)});}
+  output.sort((a,b)=>b.intent.score-a.intent.score);const counts={};for(const x of output)counts[x.lifecycle_segment]=(counts[x.lifecycle_segment]||0)+1;return {period_days:Number(days||30),customers:output.slice(0,500),segments:counts,consent_coverage:{marketing_opt_in:output.filter(x=>x.marketing_opt_in).length,phone_verified:output.filter(x=>x.phone_verified).length,whatsapp_opt_in:output.filter(x=>x.marketing_whatsapp_opt_in).length,sms_opt_in:output.filter(x=>x.marketing_sms_opt_in).length,email_opt_in:output.filter(x=>x.marketing_email_opt_in).length},note:'Segments use non-sensitive first-party shopping activity and order data only; they are for store operations and messaging eligibility.'};
 }
-
 function detectSupportIntent(message){
   const q=String(message||'').toLowerCase();
   const rules=loadCustomerSupportKnowledge().common_intents||{};
@@ -1566,66 +1552,46 @@ const server = http.createServer(async (req, res) => {
     }
 
     /* ---------------- customer auth ---------------- */
-    if (p === '/api/auth/register' && req.method === 'POST') {
-      const b = await readBody(req);
-      const name = String(b.name || '').trim(), email = String(b.email || '').trim().toLowerCase();
-      const phone = String(b.phone || '').trim(), pw = String(b.password || '');
-      if (name.length < 3) return json(res, 400, { error: 'Name must be at least 3 characters' });
-      if (!/^\S+@\S+\.\S+$/.test(email)) return json(res, 400, { error: 'Invalid email address' });
-      if (pw.length < 6) return json(res, 400, { error: 'Password must be at least 6 characters' });
-      const customers = readJSON('customers.json', []);
-      if (customers.some(c => c.email === email)) return json(res, 409, { error: 'This email is already registered — please login' });
-      const salt = newSalt();
-      const cust = {
-        id: 'CUS-' + crypto.randomBytes(4).toString('hex').toUpperCase(),
-        name, email, phone, pass: hashPw(pw, salt), salt, marketing_opt_in:false, marketing_opt_in_at:null, created: new Date().toISOString()
-      };
-      customers.push(cust); writeJSON('customers.json', customers);
-      const token = startSession('customer', cust.id);
-      console.log('[auth] registered:', email);
-      return json(res, 201, { ok: true, token, customer: { name, email, phone } });
+    if (p === '/api/auth/otp/request' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await issueCustomerOtp(b.phone));}catch(e){return json(res,400,{error:e.message});} }
+    if (p === '/api/auth/otp/verify' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await verifyCustomerLoginOtp(b.phone,b.otp));}catch(e){return json(res,401,{error:e.message});} }
+    if (p === '/api/auth/profile' && req.method === 'PATCH') {
+      const a=getAuth(req);if(!a?.session?.customerId)return json(res,401,{error:'not logged in'});
+      const b=await readBody(req),customers=readJSON('customers.json',[]),c=customers.find(x=>x.id===a.session.customerId);if(!c)return json(res,404,{error:'account not found'});
+      const name=String(b.name??c.name??'').trim().slice(0,80),email=String(b.email??c.email??'').trim().toLowerCase();
+      if(name&&name!=='Customer'&&name.length<2)return json(res,400,{error:'Name is too short'});
+      if(email&&!/^\S+@\S+\.\S+$/.test(email))return json(res,400,{error:'Invalid email address'});
+      if(email&&customers.some(x=>x.id!==c.id&&x.email===email))return json(res,409,{error:'This email is already linked to another account'});
+      if(name)c.name=name;if(b.email!==undefined)c.email=email||null;
+      for(const key of ['marketing_email_opt_in','marketing_sms_opt_in','marketing_whatsapp_opt_in'])if(typeof b[key]==='boolean'){c[key]=b[key];await recordCustomerConsent(c.id,key.replace('marketing_','').replace('_opt_in',''),b[key],'website','MARKETING');}
+      c.marketing_opt_in=!!(c.marketing_email_opt_in||c.marketing_sms_opt_in||c.marketing_whatsapp_opt_in);
+      c.marketing_opt_in_at=c.marketing_opt_in?new Date().toISOString():null;
+      if(typeof b.marketing_email_opt_in==='boolean'||typeof b.marketing_sms_opt_in==='boolean'||typeof b.marketing_whatsapp_opt_in==='boolean'){c.marketing_consent_at=new Date().toISOString();c.marketing_consent_version=CUSTOMER_MARKETING_CONSENT_VERSION;c.marketing_consent_source='website';}
+      if(['email','sms','whatsapp'].includes(String(b.preferred_marketing_channel||'')))c.preferred_marketing_channel=String(b.preferred_marketing_channel);
+      if(c.name&&c.name!=='Customer'&&c.email)c.profile_completed_at=c.profile_completed_at||new Date().toISOString();
+      c.last_seen_at=new Date().toISOString();writeJSON('customers.json',customers);
+      return json(res,200,{ok:true,customer:publicCustomer(c)});
     }
-
+    if (p === '/api/auth/register' && req.method === 'POST') return json(res,400,{error:'Customer registration now uses mobile OTP. Open Login and verify your phone number.'});
     if (p === '/api/auth/login' && req.method === 'POST') {
-      const b = await readBody(req);
-      const email = String(b.email || '').trim().toLowerCase(), pw = String(b.password || '');
-      const c = readJSON('customers.json', []).find(x => x.email === email);
-      if (!c) return json(res, 401, { error: 'Invalid email or password' });
-      const h = hashPw(pw, c.salt);
-      const ok = h.length === c.pass.length && crypto.timingSafeEqual(Buffer.from(h), Buffer.from(c.pass));
-      if (!ok) return json(res, 401, { error: 'Invalid email or password' });
-      console.log('[auth] login:', email);
-      return json(res, 200, { ok: true, token: startSession('customer', c.id), customer: { name: c.name, email: c.email, phone: c.phone } });
+      const b=await readBody(req),email=String(b.email||'').trim().toLowerCase(),pw=String(b.password||''),c=readJSON('customers.json',[]).find(x=>x.email===email);
+      if(!c||!c.pass||!c.salt)return json(res,401,{error:'Use mobile OTP login for this account.'});
+      const h=hashPw(pw,c.salt),ok=h.length===c.pass.length&&crypto.timingSafeEqual(Buffer.from(h),Buffer.from(c.pass));if(!ok)return json(res,401,{error:'Invalid email or password'});
+      c.last_login_at=new Date().toISOString();c.last_seen_at=c.last_login_at;writeJSON('customers.json',readJSON('customers.json',[]));
+      return json(res,200,{ok:true,token:startSession('customer',c.id),customer:publicCustomer(c)});
     }
-
-    if (p === '/api/auth/logout' && req.method === 'POST') {
-      const a = getAuth(req);
-      if (a) { const sessions = readJSON('sessions.json', {}); delete sessions[a.token]; writeJSON('sessions.json', sessions); }
-      return json(res, 200, { ok: true });
-    }
-
+    if (p === '/api/auth/logout' && req.method === 'POST') { const a=getAuth(req);if(a){const sessions=readJSON('sessions.json',{});delete sessions[a.token];writeJSON('sessions.json',sessions);}return json(res,200,{ok:true}); }
     if (p === '/api/auth/me' && req.method === 'GET') {
-      const a = getAuth(req);
-      if (!a || !a.session.customerId) return json(res, 401, { error: 'not logged in' });
-      const c = readJSON('customers.json', []).find(x => x.id === a.session.customerId);
-      if (!c) return json(res, 401, { error: 'account not found' });
-      return json(res, 200, { name: c.name, email: c.email, phone: c.phone, marketing_opt_in: c.marketing_opt_in===true });
+      const a=getAuth(req);if(!a?.session?.customerId)return json(res,401,{error:'not logged in'});const customers=readJSON('customers.json',[]),c=customers.find(x=>x.id===a.session.customerId);if(!c)return json(res,401,{error:'account not found'});c.last_seen_at=new Date().toISOString();writeJSON('customers.json',customers);return json(res,200,publicCustomer(c));
     }
-
-    if (p === '/api/auth/marketing-preferences' && req.method === 'GET') {
-      const a=getAuth(req);if(!a?.session?.customerId)return json(res,401,{error:'not logged in'});
-      const c=readJSON('customers.json',[]).find(x=>x.id===a.session.customerId);if(!c)return json(res,404,{error:'account not found'});
-      return json(res,200,{marketing_opt_in:c.marketing_opt_in===true});
-    }
+    if (p === '/api/auth/marketing-preferences' && req.method === 'GET') { const a=getAuth(req);if(!a?.session?.customerId)return json(res,401,{error:'not logged in'});const c=readJSON('customers.json',[]).find(x=>x.id===a.session.customerId);if(!c)return json(res,404,{error:'account not found'});return json(res,200,{marketing_opt_in:!!c.marketing_opt_in,marketing_email_opt_in:!!c.marketing_email_opt_in,marketing_sms_opt_in:!!c.marketing_sms_opt_in,marketing_whatsapp_opt_in:!!c.marketing_whatsapp_opt_in,preferred_marketing_channel:c.preferred_marketing_channel||null}); }
     if (p === '/api/auth/marketing-preferences' && req.method === 'PATCH') {
-      const a=getAuth(req);if(!a?.session?.customerId)return json(res,401,{error:'not logged in'});
-      const b=await readBody(req),customers=readJSON('customers.json',[]),c=customers.find(x=>x.id===a.session.customerId);
-      if(!c)return json(res,404,{error:'account not found'});
-      const optIn=b.marketing_opt_in===true;c.marketing_opt_in=optIn;c.marketing_opt_in_at=optIn?new Date().toISOString():null;writeJSON('customers.json',customers);
-      return json(res,200,{ok:true,marketing_opt_in:optIn});
+      const a=getAuth(req);if(!a?.session?.customerId)return json(res,401,{error:'not logged in'});const b=await readBody(req),customers=readJSON('customers.json',[]),c=customers.find(x=>x.id===a.session.customerId);if(!c)return json(res,404,{error:'account not found'});
+      for(const key of ['marketing_email_opt_in','marketing_sms_opt_in','marketing_whatsapp_opt_in'])if(typeof b[key]==='boolean'){c[key]=b[key];await recordCustomerConsent(c.id,key.replace('marketing_','').replace('_opt_in',''),b[key],'account_preferences','MARKETING');}
+      c.marketing_opt_in=!!(c.marketing_email_opt_in||c.marketing_sms_opt_in||c.marketing_whatsapp_opt_in);c.marketing_opt_in_at=c.marketing_opt_in?new Date().toISOString():null;
+      c.marketing_consent_at=new Date().toISOString();c.marketing_consent_version=CUSTOMER_MARKETING_CONSENT_VERSION;c.marketing_consent_source='account_preferences';
+      if(['email','sms','whatsapp'].includes(String(b.preferred_marketing_channel||'')))c.preferred_marketing_channel=String(b.preferred_marketing_channel);c.last_seen_at=new Date().toISOString();writeJSON('customers.json',customers);return json(res,200,publicCustomer(c));
     }
-
-    /* ---------------- orders ---------------- */
+/* ---------------- orders ---------------- */
     if (p === '/api/orders' && req.method === 'POST') {
       const b = await readBody(req);
       for (const k of ['name', 'phone', 'address', 'city', 'state', 'pincode']) {

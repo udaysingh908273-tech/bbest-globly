@@ -124,13 +124,13 @@ async function runAgent(command){
     if(d.autoActions?.length){
       out.textContent='AI safely executing '+d.autoActions.length+' low-risk action(s)…';
       for(const action of d.autoActions){
+        if(!action.approvalId) continue;
         try{
-          const payload=action.payload||{};
-          const body={approval_id:'AUTO-'+Date.now()+'-'+Math.random().toString(36).slice(2,8)};
-          // Auto actions are deliberately limited by the backend to safe product copy/small price edits.
-          // Create a temporary approval through the normal endpoint is not available, so these are
-          // surfaced as completed only when the backend exposes the action directly.
-        }catch(e){}
+          await api('/api/admin/agent/execute',{method:'POST',body:{approval_id:action.approvalId}});
+        }catch(e){
+          aiHistory.push({role:'assistant',content:'Auto-action blocked: '+e.message});
+          saveAIHistory(); renderAIHistory();
+        }
       }
     }
     out.textContent=d.autoActions?.length

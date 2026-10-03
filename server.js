@@ -213,7 +213,7 @@ function agentControlForAction(type){
   if(t==='delete_product') return 'catalog';
   if(t==='set_site_config') return 'catalog';
   if(t==='create_offer'||t==='create_customer_offer') return 'offers';
-  if(t==='create_campaign'||t==='run_ad_campaign'||t==='publish_campaign') return 'growth';
+  if(t==='create_campaign'||t==='run_ad_campaign'||t==='publish_campaign'||t==='send_marketing_campaign') return 'growth';
   return 'global';
 }
 async function assertAgentActionAllowed(type){
@@ -1180,7 +1180,7 @@ async function agentCommand(command) {
     'Plan concrete business actions from the owner request using ONLY supplied store data and business knowledge.',
     'Never fabricate live market data, supplier facts, sales, stock, ad performance, customer facts or delivery promises.',
     'Return JSON ONLY with this exact shape:',
-    '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status|create_offer|create_customer_offer|create_campaign|run_ad_campaign|publish_campaign","payload":{},"reason":"string","requiresApproval":true}]}',
+    '{"reply":"string","actions":[{"type":"add_product|update_product|delete_product|set_site_config|set_order_status|create_offer|create_customer_offer|create_campaign|run_ad_campaign|publish_campaign|send_marketing_campaign","payload":{},"reason":"string","requiresApproval":true}]}',
     'Every state-changing action returned must have requiresApproval=true. Never bypass the approval workflow.',
     'Respect the configured minimum margin, maximum discount and refund limits supplied in agent controls when making recommendations.',
     'For add_product, payload may include name, category, tagline, price_inr, compare_at_inr, img, badges, description, features, sku, supplier, supplier_sku, supplier_cost_inr, stock.',
@@ -1189,7 +1189,7 @@ async function agentCommand(command) {
     'For set_site_config, payload may include hero and theme fields only.',
     'For set_order_status, payload must include id and status.',
     'For create_offer, payload may include id, code, name, discount_type, discount_value, min_order_inr, max_uses, starts_at, ends_at, active. For create_customer_offer, use ONLY a customer_id from customer_marketing_intelligence with marketing_opt_in=true, include product_id when a specific product is being offered, and include name, discount_type and discount_value.',
-    'For create_campaign/run_ad_campaign/publish_campaign, include name, channel, objective, budget_inr, starts_at, ends_at, product_ids and creative. Paid execution and publication always require owner approval and must not be claimed as live without a connected executor.',
+    'For create_campaign/run_ad_campaign/publish_campaign, include name, channel, objective, budget_inr, starts_at, ends_at, product_ids and creative. Paid execution and publication always require owner approval and must not be claimed as live without a connected executor.', 'For send_marketing_campaign, include channel, segment or explicit customer_ids, subject/body for email/SMS, approved WhatsApp template name and parameters for WhatsApp. Target only customers with matching channel consent and verified phone where required. Sending requires owner approval and must be logged.',
     'Clearly separate REAL DATA, CALCULATED METRICS, AI ANALYSIS, AI RECOMMENDATION, CONFIDENCE and NEEDS OWNER APPROVAL.'
   ].join(' ') + '\nCONSTITUTION:\n' + JSON.stringify(constitution) + '\nSTRATEGY:\n' + JSON.stringify(strategy);
   const raw=await callAI([

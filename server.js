@@ -480,7 +480,6 @@ async function verifyAdminOtp(email,otp,newPassword){
 
 const CUSTOMER_OTP_TTL_MS=10*60*1000;
 const CUSTOMER_MARKETING_CONSENT_VERSION='2026-10-03-v1';
-const TWILIO_OTP_FROM=String(process.env.TWILIO_OTP_FROM||TWILIO_FROM||'').trim();
 const WHATSAPP_MARKETING_TEMPLATE_NAME=String(process.env.WHATSAPP_MARKETING_TEMPLATE_NAME||'').trim();
 const WHATSAPP_MARKETING_LANGUAGE=String(process.env.WHATSAPP_MARKETING_LANGUAGE||'en_US').trim();
 const gmailMailerReady=!!(nodemailer&&GMAIL_SMTP_USER&&GMAIL_SMTP_APP_PASSWORD);
@@ -516,6 +515,7 @@ const WHATSAPP_GRAPH_VERSION=String(process.env.WHATSAPP_GRAPH_VERSION||'').trim
 const TWILIO_ACCOUNT_SID=String(process.env.TWILIO_ACCOUNT_SID||'').trim();
 const TWILIO_AUTH_TOKEN=String(process.env.TWILIO_AUTH_TOKEN||'').trim();
 const TWILIO_FROM=String(process.env.TWILIO_FROM||'').trim();
+const TWILIO_OTP_FROM=String(process.env.TWILIO_OTP_FROM||TWILIO_FROM||'').trim();
 const RESEARCH_API_URL=String(process.env.RESEARCH_API_URL||'').trim();
 const RESEARCH_API_KEY=String(process.env.RESEARCH_API_KEY||'').trim();
 const AD_SPEND_API_URL=String(process.env.AD_SPEND_API_URL||'').trim();

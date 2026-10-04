@@ -485,6 +485,8 @@ const CUSTOMER_OTP_LOCK_MS=15*60*1000;
 const customerOtpLocks=new Map();
 const CUSTOMER_MARKETING_CONSENT_VERSION='2026-10-03-v1';
 const WHATSAPP_MARKETING_TEMPLATE_NAME=String(process.env.WHATSAPP_MARKETING_TEMPLATE_NAME||'').trim();
+const WHATSAPP_WELCOME_TEMPLATE_NAME=String(process.env.WHATSAPP_WELCOME_TEMPLATE_NAME||'').trim();
+const WHATSAPP_WELCOME_LANGUAGE=String(process.env.WHATSAPP_WELCOME_LANGUAGE||'en_US').trim();
 const WHATSAPP_MARKETING_LANGUAGE=String(process.env.WHATSAPP_MARKETING_LANGUAGE||'en_US').trim();
 const gmailMailerReady=!!(nodemailer&&GMAIL_SMTP_USER&&GMAIL_SMTP_APP_PASSWORD);
 function normalizePhone(value){let d=String(value||'').replace(/[^0-9]/g,'');if(d.length===10)d='91'+d;if(d.length<10||d.length>15)return '';return '+'+d;}
@@ -555,6 +557,7 @@ async function verifyCustomerEmailOtp(email,otp,name,phone,mode='login'){
     customer={id:'CUS-'+crypto.randomBytes(4).toString('hex').toUpperCase(),name:cleanName,email:safeEmail,phone:String(phone).replace(/\D/g,'').slice(-10),phone_normalized:normalized,phone_verified_at:null,email_verified_at:nowIso,pass:null,salt:null,marketing_opt_in:false,marketing_opt_in_at:null,marketing_email_opt_in:false,marketing_sms_opt_in:false,marketing_whatsapp_opt_in:false,marketing_consent_at:null,marketing_consent_version:null,marketing_consent_source:null,preferred_marketing_channel:null,last_login_at:nowIso,last_seen_at:nowIso,profile_completed_at:nowIso,created:nowIso};
     customers.push(customer);
     writeJSON('customers.json',customers);
+    setImmediate(()=>sendCustomerWelcomeNotifications(customer).catch(e=>console.error('[welcome notification]',e.message)));
     return {token:startSession('customer',customer.id),customer:publicCustomer(customer),is_new:true};
   }
 
@@ -726,6 +729,66 @@ async function notifyCustomer(customer,message){
 async function logMarketingMessage(row){if(!supabaseReady)return;try{await supabaseRequest('marketing_messages',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify(row)});}catch(e){console.error('[marketing log]',e.message)}}
 async function sendWhatsAppMarketingTemplate(to,templateName,languageCode,params=[]){if(!WHATSAPP_TOKEN||!WHATSAPP_PHONE_NUMBER_ID||!WHATSAPP_GRAPH_VERSION)throw new Error('WhatsApp Cloud API is not configured');if(!templateName)throw new Error('Approved WhatsApp marketing template is not configured');const components=params.length?[{type:'body',parameters:params.slice(0,8).map(x=>({type:'text',text:String(x).slice(0,500)}))}]:undefined;return await externalJson('https://graph.facebook.com/'+WHATSAPP_GRAPH_VERSION+'/'+encodeURIComponent(WHATSAPP_PHONE_NUMBER_ID)+'/messages',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+WHATSAPP_TOKEN},body:JSON.stringify({messaging_product:'whatsapp',to:normalizePhone(to).replace('+',''),type:'template',template:{name:templateName,language:{code:languageCode||WHATSAPP_MARKETING_LANGUAGE},...(components?{components}: {})}})});}
 async function sendMarketingMessage(customer,opts={}){const channel=String(opts.channel||'email').toLowerCase(),phoneVerified=!!customer.phone_verified_at;const allowed=channel==='whatsapp'?customer.marketing_whatsapp_opt_in===true&&phoneVerified:channel==='sms'?customer.marketing_sms_opt_in===true&&phoneVerified:channel==='email'?customer.marketing_email_opt_in===true&&!!customer.email:false;const base={id:'MSG-'+crypto.randomBytes(8).toString('hex'),customer_id:customer.id,campaign_id:opts.campaign_id||null,channel,message_type:'MARKETING',template_name:opts.template_name||null,body_preview:String(opts.body||'').slice(0,500),consent_snapshot:{marketing_opt_in:!!customer.marketing_opt_in,email:!!customer.marketing_email_opt_in,sms:!!customer.marketing_sms_opt_in,whatsapp:!!customer.marketing_whatsapp_opt_in,phone_verified:phoneVerified},created_at:new Date().toISOString()};if(!allowed){await logMarketingMessage({...base,status:'SKIPPED',error:'Missing channel consent, verified phone, or email'});return {channel,status:'SKIPPED',reason:'Missing channel consent, verified phone, or email'};}try{let response;if(channel==='whatsapp')response=await sendWhatsAppMarketingTemplate(customer.phone,opts.template_name||WHATSAPP_MARKETING_TEMPLATE_NAME,opts.template_language||WHATSAPP_MARKETING_LANGUAGE,opts.template_params||[]);else if(channel==='sms')response=await sendSmsText(customer.phone,(String(opts.body||'').trim()+'\nReply STOP to opt out.').trim());else if(channel==='email'){if(!gmailMailerReady)throw new Error('Email provider is not configured');const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});response=await transporter.sendMail({from:GMAIL_SMTP_USER,to:String(customer.email),subject:String(opts.subject||'A BBest Globly update'),text:String(opts.body||'')});}else throw new Error('Unsupported marketing channel');await logMarketingMessage({...base,status:'SENT',provider_message_id:String(response?.sid||response?.messages?.[0]?.id||response?.messageId||''),sent_at:new Date().toISOString()});return {channel,status:'SENT'};}catch(e){await logMarketingMessage({...base,status:'FAILED',error:e.message});return {channel,status:'FAILED',error:e.message};}}
+async function draftCustomerWelcomeMessage(customer){
+  const name=String(customer?.name||'there').trim()||'there';
+  const fallback='Congratulations '+name+'! Your BBest Globly account has been created successfully and your email has been verified. Welcome to BBest Globly.';
+  if(!aiReady)return fallback;
+  try{
+    const prompt='Write one short, warm BBest Globly account-created welcome message. It must say congratulations/welcome, confirm that the account was created successfully, and never invent discounts, offers, delivery claims, rewards or other benefits. Do not ask for sensitive information. Customer name: '+name.slice(0,80)+'. Return only the message text.';
+    const raw=await callAI([
+      {role:'system',content:'You are BBest Globly Customer Communications Agent. Follow the business constitution, brand voice and privacy rules. Account-created messages are service messages, not promotional offers.'},
+      {role:'user',content:prompt}
+    ],{temperature:0.2});
+    const clean=String(raw||'').trim().replace(/^["']|["']$/g,'').slice(0,1000);
+    return clean||fallback;
+  }catch{return fallback;}
+}
+
+async function sendCustomerWelcomeNotifications(customer){
+  const results=[];
+  if(!customer?.id)return results;
+  const message=await draftCustomerWelcomeMessage(customer);
+  const nowIso=new Date().toISOString();
+
+  if(customer.email&&gmailMailerReady){
+    try{
+      const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
+      const safeHtml=message.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      await transporter.sendMail({
+        from:GMAIL_SMTP_USER,
+        to:String(customer.email),
+        subject:'Welcome to BBest Globly — Account created 🎉',
+        text:message,
+        html:'<div style="font-family:Arial,sans-serif;line-height:1.6"><h2>BBest Globly 🎉</h2><p>'+safeHtml+'</p><p>Your account is ready. We look forward to serving you.</p></div>'
+      });
+      results.push({channel:'email',status:'SENT'});
+      await logMarketingMessage({id:'MSG-'+crypto.randomBytes(8).toString('hex'),customer_id:customer.id,campaign_id:null,channel:'email',message_type:'SERVICE',template_name:'ACCOUNT_WELCOME',body_preview:message.slice(0,500),consent_snapshot:{email:!!customer.email,email_verified:!!customer.email_verified_at},status:'SENT',sent_at:nowIso,created_at:nowIso});
+    }catch(e){
+      results.push({channel:'email',status:'FAILED',error:e.message});
+      await logMarketingMessage({id:'MSG-'+crypto.randomBytes(8).toString('hex'),customer_id:customer.id,campaign_id:null,channel:'email',message_type:'SERVICE',template_name:'ACCOUNT_WELCOME',body_preview:message.slice(0,500),consent_snapshot:{email:!!customer.email,email_verified:!!customer.email_verified_at},status:'FAILED',error:e.message,created_at:nowIso});
+    }
+  }else{
+    results.push({channel:'email',status:'SKIPPED',reason:'Email provider is not configured'});
+  }
+
+  const whatsappEligible=!!(customer.phone&&customer.phone_verified_at&&customer.marketing_whatsapp_opt_in===true);
+  const welcomeTemplate=WHATSAPP_WELCOME_TEMPLATE_NAME;
+  const welcomeLanguage=WHATSAPP_WELCOME_LANGUAGE;
+  if(whatsappEligible&&welcomeTemplate&&WHATSAPP_TOKEN&&WHATSAPP_PHONE_NUMBER_ID&&WHATSAPP_GRAPH_VERSION){
+    try{
+      await sendWhatsAppMarketingTemplate(customer.phone,welcomeTemplate,welcomeLanguage,[String(customer.name||'there').slice(0,80)]);
+      results.push({channel:'whatsapp',status:'SENT'});
+      await logMarketingMessage({id:'MSG-'+crypto.randomBytes(8).toString('hex'),customer_id:customer.id,campaign_id:null,channel:'whatsapp',message_type:'SERVICE',template_name:welcomeTemplate,body_preview:message.slice(0,500),consent_snapshot:{whatsapp:true,phone_verified:true},status:'SENT',sent_at:nowIso,created_at:nowIso});
+    }catch(e){
+      results.push({channel:'whatsapp',status:'FAILED',error:e.message});
+      await logMarketingMessage({id:'MSG-'+crypto.randomBytes(8).toString('hex'),customer_id:customer.id,campaign_id:null,channel:'whatsapp',message_type:'SERVICE',template_name:welcomeTemplate,body_preview:message.slice(0,500),consent_snapshot:{whatsapp:true,phone_verified:true},status:'FAILED',error:e.message,created_at:nowIso});
+    }
+  }else{
+    results.push({channel:'whatsapp',status:'PENDING',reason:!customer.phone_verified_at?'phone verification required':!customer.marketing_whatsapp_opt_in?'WhatsApp consent required':!welcomeTemplate?'WHATSAPP_WELCOME_TEMPLATE_NAME is not configured':'WhatsApp Cloud API is not configured'});
+  }
+  return results;
+}
+
 function marketingChannelAvailable(channel){const c=String(channel||'').toLowerCase();if(c==='whatsapp')return !!(WHATSAPP_TOKEN&&WHATSAPP_PHONE_NUMBER_ID&&WHATSAPP_GRAPH_VERSION&&WHATSAPP_MARKETING_TEMPLATE_NAME);if(c==='sms')return !!(TWILIO_ACCOUNT_SID&&TWILIO_AUTH_TOKEN&&TWILIO_FROM);if(c==='email')return !!gmailMailerReady;return false;}
 function customerEligibleChannel(customer,preferred=null){const prefs=[preferred,customer.preferred_marketing_channel,'whatsapp','sms','email'].filter(Boolean).map(x=>String(x).toLowerCase());for(const channel of prefs){const consent=channel==='whatsapp'?customer.marketing_whatsapp_opt_in===true&&!!customer.phone_verified_at:channel==='sms'?customer.marketing_sms_opt_in===true&&!!customer.phone_verified_at:channel==='email'?customer.marketing_email_opt_in===true&&!!customer.email:false;if(consent&&marketingChannelAvailable(channel))return channel;}return null;}
 async function sendMarketingOffer(customer,offer){if(!customer?.marketing_opt_in)return {skipped:true,reason:'customer marketing opt-in is false'};const channel=customerEligibleChannel(customer);if(!channel)return {skipped:true,reason:'No opted-in, verified, configured marketing channel'};const productText=offer.product_name?' for '+offer.product_name:'';const plain='BBest Globly offer'+productText+': use code '+String(offer.code||'')+' for '+String(offer.discount_value||0)+'% off. Valid until '+String(offer.ends_at||'the expiry date')+'.';const result=await sendMarketingMessage(customer,{channel,body:plain,subject:'A personalized BBest Globly offer',template_name:WHATSAPP_MARKETING_TEMPLATE_NAME,template_params:[customer.name||'there',String(offer.discount_value||0)+'%',String(offer.code||'')]});return {skipped:false,channel,result};}

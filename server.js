@@ -513,13 +513,31 @@ async function sendCustomerEmailOtp(email,mode='login'){
   if(now-state.lastSent<60*1000) throw new Error('Please wait 60 seconds before requesting another verification code.');
   const otp=String(crypto.randomInt(100000,1000000));
   const salt=newSalt(),hash=hashPw(otp,salt);
-  const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
-  await transporter.sendMail({
-    from:GMAIL_SMTP_USER,to:safeEmail,
-    subject:mode==='register'?'BBest Globly — Verify your email':'BBest Globly — Login verification code',
-    text:(mode==='register'?'Your BBest Globly email verification code is ':'Your BBest Globly login verification code is ')+otp+'. It expires in 5 minutes. Do not share this code.',
-    html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>'+(mode==='register'?'Your email verification code is:':'Your login verification code is:')+'</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This code expires in 5 minutes. Do not share it.</p></div>'
-  });
+  const smtpPass=GMAIL_SMTP_APP_PASSWORD.replace(/\s+/g,'');
+  const smtpConfigs=[
+    {host:'smtp.gmail.com',port:587,secure:false,requireTLS:true,auth:{user:GMAIL_SMTP_USER,pass:smtpPass}},
+    {host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:smtpPass}}
+  ];
+  let lastSmtpError=null, sent=false;
+  for(const cfg of smtpConfigs){
+    try{
+      const transporter=nodemailer.createTransport(cfg);
+      await transporter.verify();
+      await transporter.sendMail({
+        from:GMAIL_SMTP_USER,to:safeEmail,
+        subject:mode==='register'?'BBest Globly — Verify your email':'BBest Globly — Login verification code',
+        text:(mode==='register'?'Your BBest Globly email verification code is ':'Your BBest Globly login verification code is ')+otp+'. It expires in 5 minutes. Do not share this code.',
+        html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>'+(mode==='register'?'Your email verification code is:':'Your login verification code is:')+'</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This code expires in 5 minutes. Do not share it.</p></div>'
+      });
+      sent=true;break;
+    }catch(e){
+      lastSmtpError=e;
+      console.error('[customer email otp] SMTP failed on '+cfg.port+':',e.code||'',e.responseCode||'',e.message||'unknown error');
+    }
+  }
+  if(!sent){
+    throw new Error('OTP email could not be sent. Check GMAIL_SMTP_USER and GMAIL_SMTP_APP_PASSWORD, then redeploy on Render. '+String(lastSmtpError?.code||lastSmtpError?.responseCode||'SMTP_ERROR'));
+  }
   state.lastSent=now;state.attempts++;state.otpHash=hash;state.otpSalt=salt;state.expiresAt=now+CUSTOMER_EMAIL_OTP_TTL_MS;state.mode=mode;
   customerEmailOtpState.set(key,state);
   return {ok:true,masked_email:safeEmail.replace(/^(.{2}).*(@.*)$/,'$1••••$2'),mode};
@@ -1783,6 +1801,17 @@ const server = http.createServer(async (req, res) => {
     /* ---------------- customer auth ---------------- */
     if (p === '/api/auth/otp/request' && req.method === 'POST') { const b=await readBody(req); if(!b.email)return json(res,400,{error:'Customer authentication now uses email verification. Please enter your email address.'}); try{return json(res,200,await sendCustomerEmailOtp(b.email,b.mode));}catch(e){return json(res,400,{error:e.message});} }
     if (p === '/api/auth/otp/verify' && req.method === 'POST') { const b=await readBody(req); if(!b.email)return json(res,400,{error:'Customer authentication now uses email verification. Please enter your email address.'}); try{return json(res,200,await verifyCustomerEmailOtp(b.email,b.otp,b.name,b.phone,b.mode));}catch(e){return json(res,401,{error:e.message});} }
+    if (p === '/api/auth/email/status' && req.method === 'GET') {
+      return json(res,200,{
+        ok:true,
+        provider:'gmail-smtp',
+        nodemailer:!!nodemailer,
+        configured:!!(gmailOtpReady&&supabaseReady),
+        smtp_credentials:!!(GMAIL_SMTP_USER&&GMAIL_SMTP_APP_PASSWORD),
+        supabase:!!supabaseReady,
+        message:'Secrets are not exposed by this endpoint.'
+      });
+    }
     if (p === '/api/auth/email/request' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await sendCustomerEmailOtp(b.email,b.mode));}catch(e){return json(res,400,{error:e.message});} }
     if (p === '/api/auth/email/verify' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await verifyCustomerEmailOtp(b.email,b.otp,b.name,b.phone,b.mode));}catch(e){return json(res,401,{error:e.message});} }
     if (p === '/api/auth/profile' && req.method === 'PATCH') {

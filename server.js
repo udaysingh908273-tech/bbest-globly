@@ -495,61 +495,73 @@ const CUSTOMER_EMAIL_OTP_TTL_MS=5*60*1000;
 const CUSTOMER_EMAIL_OTP_LOCK_MS=15*60*1000;
 const customerEmailOtpState=new Map();
 
-async function sendCustomerEmailOtp(email){
+async function sendCustomerEmailOtp(email,mode='login'){
   if(!gmailOtpReady) throw new Error('Email verification is not configured. Add GMAIL_SMTP_USER and GMAIL_SMTP_APP_PASSWORD in Render.');
+  mode=mode==='register'?'register':'login';
   const safeEmail=String(email||'').trim().toLowerCase();
-  if(!/^\\S+@\\S+\\.\\S+$/.test(safeEmail)) throw new Error('Enter a valid email address.');
-  const now=Date.now(), state=customerEmailOtpState.get(safeEmail)||{attempts:0,windowStart:now,lastSent:0,lockedUntil:0};
+  if(!/^\S+@\S+\.\S+$/.test(safeEmail)) throw new Error('Enter a valid email address.');
+  const customers=readJSON('customers.json',[]);
+  const existing=customers.find(x=>String(x.email||'').trim().toLowerCase()===safeEmail);
+  if(mode==='login'&&!existing) throw new Error('No customer account was found for this email. Please create an account first.');
+  if(mode==='register'&&existing) throw new Error('An account already exists for this email. Please use Login.');
+  const now=Date.now(), key=mode+':'+safeEmail, state=customerEmailOtpState.get(key)||{attempts:0,windowStart:now,lastSent:0,wrongAttempts:0,lockedUntil:0};
   if(state.lockedUntil>now) throw new Error('Too many incorrect attempts. Try again after 15 minutes.');
-  if(now-state.windowStart>=60*60*1000){state.attempts=0;state.windowStart=now;}
+  if(now-state.windowStart>=60*60*1000){state.attempts=0;state.windowStart=now;state.wrongAttempts=0;}
   if(state.attempts>=5) throw new Error('Too many verification attempts. Try again later.');
   if(now-state.lastSent<60*1000) throw new Error('Please wait 60 seconds before requesting another verification code.');
   const otp=String(crypto.randomInt(100000,1000000));
   const salt=newSalt(),hash=hashPw(otp,salt);
   const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
   await transporter.sendMail({
-    from:GMAIL_SMTP_USER,to:safeEmail,subject:'BBest Globly — Email Verification',
-    text:'Your BBest Globly verification code is '+otp+'. It expires in 5 minutes. Do not share this code.',
-    html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>Your email verification code is:</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This code expires in 5 minutes. Do not share it.</p></div>'
+    from:GMAIL_SMTP_USER,to:safeEmail,
+    subject:mode==='register'?'BBest Globly — Verify your email':'BBest Globly — Login verification code',
+    text:(mode==='register'?'Your BBest Globly email verification code is ':'Your BBest Globly login verification code is ')+otp+'. It expires in 5 minutes. Do not share this code.',
+    html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>'+(mode==='register'?'Your email verification code is:':'Your login verification code is:')+'</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This code expires in 5 minutes. Do not share it.</p></div>'
   });
-  state.lastSent=now;state.attempts++;state.otpHash=hash;state.otpSalt=salt;state.expiresAt=now+CUSTOMER_EMAIL_OTP_TTL_MS;
-  customerEmailOtpState.set(safeEmail,state);
-  return {ok:true,masked_email:safeEmail.replace(/^(.{2}).*(@.*)$/,'$1••••$2')};
+  state.lastSent=now;state.attempts++;state.otpHash=hash;state.otpSalt=salt;state.expiresAt=now+CUSTOMER_EMAIL_OTP_TTL_MS;state.mode=mode;
+  customerEmailOtpState.set(key,state);
+  return {ok:true,masked_email:safeEmail.replace(/^(.{2}).*(@.*)$/,'$1••••$2'),mode};
 }
 
-async function verifyCustomerEmailOtp(email,otp,name,phone){
+async function verifyCustomerEmailOtp(email,otp,name,phone,mode='login'){
   if(!gmailOtpReady) throw new Error('Email verification is not configured.');
+  mode=mode==='register'?'register':'login';
   const safeEmail=String(email||'').trim().toLowerCase();
-  if(!/^\\S+@\\S+\\.\\S+$/.test(safeEmail)) throw new Error('Enter a valid email address.');
-  const state=customerEmailOtpState.get(safeEmail);
+  if(!/^\S+@\S+\.\S+$/.test(safeEmail)) throw new Error('Enter a valid email address.');
+  const key=mode+':'+safeEmail;
+  const state=customerEmailOtpState.get(key);
   if(!state?.otpHash) throw new Error('Verification code not found. Request a new code.');
+  if(state.mode!==mode) throw new Error('Verification session expired. Request a new code.');
   if(state.lockedUntil>Date.now()) throw new Error('Too many incorrect attempts. Try again after 15 minutes.');
-  if(state.expiresAt<Date.now()) { customerEmailOtpState.delete(safeEmail); throw new Error('Verification code expired. Request a new code.'); }
+  if(state.expiresAt<Date.now()) { customerEmailOtpState.delete(key); throw new Error('Verification code expired. Request a new code.'); }
   const expected=hashPw(String(otp||'').trim(),state.otpSalt),a=Buffer.from(expected),b=Buffer.from(state.otpHash);
   if(a.length!==b.length||!crypto.timingSafeEqual(a,b)){
     state.wrongAttempts=(state.wrongAttempts||0)+1;
-    if(state.wrongAttempts>=5){state.lockedUntil=Date.now()+CUSTOMER_EMAIL_OTP_LOCK_MS;customerEmailOtpState.set(safeEmail,state);throw new Error('Too many incorrect verification attempts. Try again after 15 minutes.');}
-    customerEmailOtpState.set(safeEmail,state);
+    if(state.wrongAttempts>=5){state.lockedUntil=Date.now()+CUSTOMER_EMAIL_OTP_LOCK_MS;customerEmailOtpState.set(key,state);throw new Error('Too many incorrect verification attempts. Try again after 15 minutes.');}
+    customerEmailOtpState.set(key,state);
     throw new Error('Incorrect verification code.');
   }
-  customerEmailOtpState.delete(safeEmail);
+  customerEmailOtpState.delete(key);
   const customers=readJSON('customers.json',[]);
-  let customer=customers.find(x=>String(x.email||'').toLowerCase()===safeEmail);
-  let normalized=customer?.phone_normalized||normalizePhone(phone);
-  if(!customer && !validPhone(phone)) throw new Error('Enter a valid 10-digit mobile number.');
-  if(!normalized && !validPhone(phone)) throw new Error('A valid mobile number is required.');
+  let customer=customers.find(x=>String(x.email||'').trim().toLowerCase()===safeEmail);
   const nowIso=new Date().toISOString();
-  const cleanName=String(name||'').trim().slice(0,80);
-  if(!cleanName||cleanName.length<2) throw new Error('Full name is required.');
-  if(!customer){
-    customer={id:'CUS-'+crypto.randomBytes(4).toString('hex').toUpperCase(),name:cleanName,email:safeEmail,phone:String(phone).trim().slice(0,30),phone_normalized:normalized,phone_verified_at:null,email_verified_at:nowIso,pass:null,salt:null,marketing_opt_in:false,marketing_opt_in_at:null,marketing_email_opt_in:false,marketing_sms_opt_in:false,marketing_whatsapp_opt_in:false,marketing_consent_at:null,marketing_consent_version:null,marketing_consent_source:null,preferred_marketing_channel:null,last_login_at:nowIso,last_seen_at:nowIso,profile_completed_at:nowIso,created:nowIso};
+
+  if(mode==='register'){
+    if(customer) throw new Error('An account already exists for this email. Please use Login.');
+    const cleanName=String(name||'').trim().slice(0,80);
+    if(!cleanName||cleanName.length<2) throw new Error('Full name is required.');
+    const normalized=normalizePhone(phone);
+    if(!validPhone(phone)||!normalized) throw new Error('Enter a valid 10-digit mobile number.');
+    customer={id:'CUS-'+crypto.randomBytes(4).toString('hex').toUpperCase(),name:cleanName,email:safeEmail,phone:String(phone).replace(/\D/g,'').slice(-10),phone_normalized:normalized,phone_verified_at:null,email_verified_at:nowIso,pass:null,salt:null,marketing_opt_in:false,marketing_opt_in_at:null,marketing_email_opt_in:false,marketing_sms_opt_in:false,marketing_whatsapp_opt_in:false,marketing_consent_at:null,marketing_consent_version:null,marketing_consent_source:null,preferred_marketing_channel:null,last_login_at:nowIso,last_seen_at:nowIso,profile_completed_at:nowIso,created:nowIso};
     customers.push(customer);
-  } else {
-    customer.name=cleanName;customer.email=safeEmail;customer.phone=String(phone).trim().slice(0,30);customer.phone_normalized=normalized;
-    customer.email_verified_at=nowIso;customer.last_login_at=nowIso;customer.last_seen_at=nowIso;customer.profile_completed_at=customer.profile_completed_at||nowIso;
+    writeJSON('customers.json',customers);
+    return {token:startSession('customer',customer.id),customer:publicCustomer(customer),is_new:true};
   }
+
+  if(!customer) throw new Error('No customer account was found for this email. Please create an account first.');
+  customer.email_verified_at=nowIso;customer.last_login_at=nowIso;customer.last_seen_at=nowIso;
   writeJSON('customers.json',customers);
-  return {token:startSession('customer',customer.id),customer:publicCustomer(customer),is_new:customer.created===nowIso};
+  return {token:startSession('customer',customer.id),customer:publicCustomer(customer),is_new:false};
 }
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -1706,10 +1718,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     /* ---------------- customer auth ---------------- */
-    if (p === '/api/auth/otp/request' && req.method === 'POST') return json(res,410,{error:'Phone OTP is disabled. Use email verification.'});
-    if (p === '/api/auth/otp/verify' && req.method === 'POST') return json(res,410,{error:'Phone OTP is disabled. Use email verification.'});
-    if (p === '/api/auth/email/request' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await sendCustomerEmailOtp(b.email));}catch(e){return json(res,400,{error:e.message});} }
-    if (p === '/api/auth/email/verify' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await verifyCustomerEmailOtp(b.email,b.otp,b.name,b.phone));}catch(e){return json(res,401,{error:e.message});} }
+    if (p === '/api/auth/otp/request' && req.method === 'POST') { const b=await readBody(req); if(!b.email)return json(res,400,{error:'Customer authentication now uses email verification. Please enter your email address.'}); try{return json(res,200,await sendCustomerEmailOtp(b.email,b.mode));}catch(e){return json(res,400,{error:e.message});} }
+    if (p === '/api/auth/otp/verify' && req.method === 'POST') { const b=await readBody(req); if(!b.email)return json(res,400,{error:'Customer authentication now uses email verification. Please enter your email address.'}); try{return json(res,200,await verifyCustomerEmailOtp(b.email,b.otp,b.name,b.phone,b.mode));}catch(e){return json(res,401,{error:e.message});} }
+    if (p === '/api/auth/email/request' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await sendCustomerEmailOtp(b.email,b.mode));}catch(e){return json(res,400,{error:e.message});} }
+    if (p === '/api/auth/email/verify' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await verifyCustomerEmailOtp(b.email,b.otp,b.name,b.phone,b.mode));}catch(e){return json(res,401,{error:e.message});} }
     if (p === '/api/auth/profile' && req.method === 'PATCH') {
       const a=getAuth(req);if(!a?.session?.customerId)return json(res,401,{error:'not logged in'});
       const b=await readBody(req),customers=readJSON('customers.json',[]),c=customers.find(x=>x.id===a.session.customerId);if(!c)return json(res,404,{error:'account not found'});
@@ -1728,10 +1740,10 @@ const server = http.createServer(async (req, res) => {
       c.last_seen_at=new Date().toISOString();writeJSON('customers.json',customers);
       return json(res,200,{ok:true,customer:publicCustomer(c)});
     }
-    if (p === '/api/auth/register' && req.method === 'POST') return json(res,400,{error:'Customer registration now uses mobile OTP. Open Login and verify your phone number.'});
+    if (p === '/api/auth/register' && req.method === 'POST') return json(res,400,{error:'Customer registration uses email verification. Open Create Account and verify your email.'});
     if (p === '/api/auth/login' && req.method === 'POST') {
       const b=await readBody(req),email=String(b.email||'').trim().toLowerCase(),pw=String(b.password||''),c=readJSON('customers.json',[]).find(x=>x.email===email);
-      if(!c||!c.pass||!c.salt)return json(res,401,{error:'Use mobile OTP login for this account.'});
+      if(!c||!c.pass||!c.salt)return json(res,401,{error:'Customer login uses email verification. Open Login and request a verification code.'});
       const h=hashPw(pw,c.salt),ok=h.length===c.pass.length&&crypto.timingSafeEqual(Buffer.from(h),Buffer.from(c.pass));if(!ok)return json(res,401,{error:'Invalid email or password'});
       c.last_login_at=new Date().toISOString();c.last_seen_at=c.last_login_at;writeJSON('customers.json',readJSON('customers.json',[]));
       return json(res,200,{ok:true,token:startSession('customer',c.id),customer:publicCustomer(c)});

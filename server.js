@@ -11,8 +11,32 @@ let nodemailer = null;
 try { nodemailer = require('nodemailer'); } catch {}
 const GMAIL_SMTP_USER = String(process.env.GMAIL_SMTP_USER || '').trim();
 const GMAIL_SMTP_APP_PASSWORD = String(process.env.GMAIL_SMTP_APP_PASSWORD || '').replace(/\s+/g,'');
-const ADMIN_RECOVERY_EMAIL = String(process.env.ADMIN_RECOVERY_EMAIL || GMAIL_SMTP_USER).trim().toLowerCase();
-const gmailOtpReady = !!(nodemailer && GMAIL_SMTP_USER && GMAIL_SMTP_APP_PASSWORD && ADMIN_RECOVERY_EMAIL);
+const SMTP_HOST = String(process.env.SMTP_HOST || '').trim();
+const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
+const SMTP_SECURE = String(process.env.SMTP_SECURE || (SMTP_PORT===465 ? 'true' : 'false')).toLowerCase()==='true';
+const SMTP_USER = String(process.env.SMTP_USER || GMAIL_SMTP_USER).trim();
+const SMTP_PASSWORD = String(process.env.SMTP_PASSWORD || GMAIL_SMTP_APP_PASSWORD).replace(/\s+/g,'');
+const SMTP_FROM = String(process.env.SMTP_FROM || GMAIL_SMTP_USER).trim();
+const SMTP_FROM_NAME = String(process.env.SMTP_FROM_NAME || 'BBest Globly').trim();
+const MAIL_HOST = SMTP_HOST || 'smtp.gmail.com';
+const MAIL_PORT = SMTP_HOST ? SMTP_PORT : 465;
+const MAIL_SECURE = SMTP_HOST ? SMTP_SECURE : true;
+const mailReady = !!(nodemailer && SMTP_USER && SMTP_PASSWORD && SMTP_FROM);
+const ADMIN_RECOVERY_EMAIL = String(process.env.ADMIN_RECOVERY_EMAIL || GMAIL_SMTP_USER || SMTP_FROM).trim().toLowerCase();
+const gmailOtpReady = !!(mailReady && ADMIN_RECOVERY_EMAIL);
+function createMailTransport(){
+  if(!mailReady) throw new Error('Email provider is not configured. Add SMTP_HOST, SMTP_USER, SMTP_PASSWORD and SMTP_FROM in Render.');
+  return nodemailer.createTransport({
+    host:MAIL_HOST,
+    port:MAIL_PORT,
+    secure:MAIL_SECURE,
+    ...(MAIL_SECURE ? {} : {requireTLS:true}),
+    auth:{user:SMTP_USER,pass:SMTP_PASSWORD}
+  });
+}
+function mailFrom(){
+  return SMTP_FROM_NAME ? SMTP_FROM_NAME+' <'+SMTP_FROM+'>' : SMTP_FROM;
+}
 const otpThrottle = new Map();
 function otpAllowed(key){
   const now=Date.now(), x=otpThrottle.get(key)||{count:0,windowStart:now,last:0};
@@ -381,29 +405,22 @@ async function resetAdminPassword(newPassword) {
   });
 }
 async function sendAdminOtp(email){
-  if(!gmailOtpReady) throw new Error('Gmail OTP is not configured. In Render add GMAIL_SMTP_USER, GMAIL_SMTP_APP_PASSWORD and ADMIN_RECOVERY_EMAIL.');
+  if(!gmailOtpReady) throw new Error('Email OTP is not configured. Add SMTP_USER, SMTP_PASSWORD and ADMIN_RECOVERY_EMAIL in Render.');
   const safeEmail=String(email||'').trim().toLowerCase();
   if(safeEmail!==ADMIN_RECOVERY_EMAIL) throw new Error('This email is not the configured admin recovery email.');
   const otp=String(crypto.randomInt(100000,1000000));
   const salt=newSalt(), hash=hashPw(otp,salt), id='OTP-'+crypto.randomBytes(8).toString('hex');
   const smtpPass=GMAIL_SMTP_APP_PASSWORD.replace(/\s+/g,'');
-  let transporter=nodemailer.createTransport({
-    host:'smtp.gmail.com',port:587,secure:false,
-    requireTLS:true,
-    auth:{user:GMAIL_SMTP_USER,pass:smtpPass}
-  });
+  let transporter=createMailTransport();
   try{
     await transporter.verify();
   }catch(e){
     console.error('[gmail otp] SMTP verify failed:',e.code||'',e.message||'unknown error');
-    transporter=nodemailer.createTransport({
-      host:'smtp.gmail.com',port:465,secure:true,
-      auth:{user:GMAIL_SMTP_USER,pass:smtpPass}
-    });
+    transporter=createMailTransport();
   }
   try{
     await transporter.sendMail({
-      from:GMAIL_SMTP_USER,
+      from:mailFrom(),
       to:safeEmail,
       subject:'BBest Globly Admin Password Reset OTP',
       text:'Your BBest Globly admin password reset OTP is '+otp+'. It expires in 10 minutes.',
@@ -411,7 +428,7 @@ async function sendAdminOtp(email){
     });
   }catch(e){
     console.error('[gmail otp] send failed:',e.code||'',e.responseCode||'',e.message||'unknown error');
-    throw new Error('Gmail could not send the OTP. Check the Gmail address, 2-Step Verification and App Password in Render.');
+    throw new Error('Email provider could not send the OTP. Check the SMTP settings in Render.');
   }
   await supabaseRequest('admin_password_otps',{
     method:'POST',
@@ -425,9 +442,9 @@ async function sendCustomerOtp(email){
   const safeEmail=String(email||'').trim().toLowerCase();
   const otp=String(crypto.randomInt(100000,1000000));
   const salt=newSalt(), hash=hashPw(otp,salt), id='OTP-'+crypto.randomBytes(8).toString('hex');
-  const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
+  const transporter=createMailTransport();
   await transporter.sendMail({
-    from:GMAIL_SMTP_USER,to:safeEmail,subject:'BBest Globly — Password Reset OTP',
+    from:mailFrom(),to:safeEmail,subject:'BBest Globly — Password Reset OTP',
     text:'Your BBest Globly password reset OTP is '+otp+'. It expires in 10 minutes.',
     html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>Your password reset OTP is:</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This OTP expires in 10 minutes.</p></div>'
   });
@@ -488,7 +505,7 @@ const WHATSAPP_MARKETING_TEMPLATE_NAME=String(process.env.WHATSAPP_MARKETING_TEM
 const WHATSAPP_WELCOME_TEMPLATE_NAME=String(process.env.WHATSAPP_WELCOME_TEMPLATE_NAME||'').trim();
 const WHATSAPP_WELCOME_LANGUAGE=String(process.env.WHATSAPP_WELCOME_LANGUAGE||'en_US').trim();
 const WHATSAPP_MARKETING_LANGUAGE=String(process.env.WHATSAPP_MARKETING_LANGUAGE||'en_US').trim();
-const gmailMailerReady=!!(nodemailer&&GMAIL_SMTP_USER&&GMAIL_SMTP_APP_PASSWORD);
+const gmailMailerReady=mailReady;
 function normalizePhone(value){let d=String(value||'').replace(/[^0-9]/g,'');if(d.length===10)d='91'+d;if(d.length<10||d.length>15)return '';return '+'+d;}
 function validPhone(value){return /^\+[1-9]\d{9,14}$/.test(normalizePhone(value));}
 function publicCustomer(c){return {id:c.id,name:c.name||'',email:c.email||'',phone:c.phone||'',phone_normalized:c.phone_normalized||normalizePhone(c.phone||''),phone_verified:!!c.phone_verified_at,email_verified:!!c.email_verified_at,marketing_opt_in:c.marketing_opt_in===true,marketing_email_opt_in:c.marketing_email_opt_in===true,marketing_sms_opt_in:c.marketing_sms_opt_in===true,marketing_whatsapp_opt_in:c.marketing_whatsapp_opt_in===true,preferred_marketing_channel:c.preferred_marketing_channel||null,profile_completed:!!c.profile_completed_at};}
@@ -498,7 +515,7 @@ const CUSTOMER_EMAIL_OTP_LOCK_MS=15*60*1000;
 const customerEmailOtpState=new Map();
 
 async function sendCustomerEmailOtp(email,mode='login'){
-  if(!gmailOtpReady) throw new Error('Email verification is not configured. Add GMAIL_SMTP_USER and GMAIL_SMTP_APP_PASSWORD in Render.');
+  if(!gmailOtpReady) throw new Error('Email verification is not configured. Add your SMTP email settings in Render.');
   mode=mode==='register'?'register':'login';
   const safeEmail=String(email||'').trim().toLowerCase();
   if(!/^\S+@\S+\.\S+$/.test(safeEmail)) throw new Error('Enter a valid email address.');
@@ -524,7 +541,7 @@ async function sendCustomerEmailOtp(email,mode='login'){
       const transporter=nodemailer.createTransport(cfg);
       await transporter.verify();
       await transporter.sendMail({
-        from:GMAIL_SMTP_USER,to:safeEmail,
+        from:mailFrom(),to:safeEmail,
         subject:mode==='register'?'BBest Globly — Verify your email':'BBest Globly — Login verification code',
         text:(mode==='register'?'Your BBest Globly email verification code is ':'Your BBest Globly login verification code is ')+otp+'. It expires in 5 minutes. Do not share this code.',
         html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>'+(mode==='register'?'Your email verification code is:':'Your login verification code is:')+'</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This code expires in 5 minutes. Do not share it.</p></div>'
@@ -737,8 +754,8 @@ async function notifyCustomer(customer,message){
   }
   if(customer?.email&&gmailOtpReady){
     try{
-      const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
-      await transporter.sendMail({from:GMAIL_SMTP_USER,to:String(customer.email),subject:'BBest Globly order update',text:String(message||'')});
+      const transporter=createMailTransport();
+      await transporter.sendMail({from:mailFrom(),to:String(customer.email),subject:'BBest Globly order update',text:String(message||'')});
       results.push({channel:'email',ok:true});
     }catch(e){results.push({channel:'email',ok:false,error:e.message})}
   }
@@ -746,7 +763,7 @@ async function notifyCustomer(customer,message){
 }
 async function logMarketingMessage(row){if(!supabaseReady)return;try{await supabaseRequest('marketing_messages',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify(row)});}catch(e){console.error('[marketing log]',e.message)}}
 async function sendWhatsAppMarketingTemplate(to,templateName,languageCode,params=[]){if(!WHATSAPP_TOKEN||!WHATSAPP_PHONE_NUMBER_ID||!WHATSAPP_GRAPH_VERSION)throw new Error('WhatsApp Cloud API is not configured');if(!templateName)throw new Error('Approved WhatsApp marketing template is not configured');const components=params.length?[{type:'body',parameters:params.slice(0,8).map(x=>({type:'text',text:String(x).slice(0,500)}))}]:undefined;return await externalJson('https://graph.facebook.com/'+WHATSAPP_GRAPH_VERSION+'/'+encodeURIComponent(WHATSAPP_PHONE_NUMBER_ID)+'/messages',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+WHATSAPP_TOKEN},body:JSON.stringify({messaging_product:'whatsapp',to:normalizePhone(to).replace('+',''),type:'template',template:{name:templateName,language:{code:languageCode||WHATSAPP_MARKETING_LANGUAGE},...(components?{components}: {})}})});}
-async function sendMarketingMessage(customer,opts={}){const channel=String(opts.channel||'email').toLowerCase(),phoneVerified=!!customer.phone_verified_at;const allowed=channel==='whatsapp'?customer.marketing_whatsapp_opt_in===true&&phoneVerified:channel==='sms'?customer.marketing_sms_opt_in===true&&phoneVerified:channel==='email'?customer.marketing_email_opt_in===true&&!!customer.email:false;const base={id:'MSG-'+crypto.randomBytes(8).toString('hex'),customer_id:customer.id,campaign_id:opts.campaign_id||null,channel,message_type:'MARKETING',template_name:opts.template_name||null,body_preview:String(opts.body||'').slice(0,500),consent_snapshot:{marketing_opt_in:!!customer.marketing_opt_in,email:!!customer.marketing_email_opt_in,sms:!!customer.marketing_sms_opt_in,whatsapp:!!customer.marketing_whatsapp_opt_in,phone_verified:phoneVerified},created_at:new Date().toISOString()};if(!allowed){await logMarketingMessage({...base,status:'SKIPPED',error:'Missing channel consent, verified phone, or email'});return {channel,status:'SKIPPED',reason:'Missing channel consent, verified phone, or email'};}try{let response;if(channel==='whatsapp')response=await sendWhatsAppMarketingTemplate(customer.phone,opts.template_name||WHATSAPP_MARKETING_TEMPLATE_NAME,opts.template_language||WHATSAPP_MARKETING_LANGUAGE,opts.template_params||[]);else if(channel==='sms')response=await sendSmsText(customer.phone,(String(opts.body||'').trim()+'\nReply STOP to opt out.').trim());else if(channel==='email'){if(!gmailMailerReady)throw new Error('Email provider is not configured');const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});response=await transporter.sendMail({from:GMAIL_SMTP_USER,to:String(customer.email),subject:String(opts.subject||'A BBest Globly update'),text:String(opts.body||'')});}else throw new Error('Unsupported marketing channel');await logMarketingMessage({...base,status:'SENT',provider_message_id:String(response?.sid||response?.messages?.[0]?.id||response?.messageId||''),sent_at:new Date().toISOString()});return {channel,status:'SENT'};}catch(e){await logMarketingMessage({...base,status:'FAILED',error:e.message});return {channel,status:'FAILED',error:e.message};}}
+async function sendMarketingMessage(customer,opts={}){const channel=String(opts.channel||'email').toLowerCase(),phoneVerified=!!customer.phone_verified_at;const allowed=channel==='whatsapp'?customer.marketing_whatsapp_opt_in===true&&phoneVerified:channel==='sms'?customer.marketing_sms_opt_in===true&&phoneVerified:channel==='email'?customer.marketing_email_opt_in===true&&!!customer.email:false;const base={id:'MSG-'+crypto.randomBytes(8).toString('hex'),customer_id:customer.id,campaign_id:opts.campaign_id||null,channel,message_type:'MARKETING',template_name:opts.template_name||null,body_preview:String(opts.body||'').slice(0,500),consent_snapshot:{marketing_opt_in:!!customer.marketing_opt_in,email:!!customer.marketing_email_opt_in,sms:!!customer.marketing_sms_opt_in,whatsapp:!!customer.marketing_whatsapp_opt_in,phone_verified:phoneVerified},created_at:new Date().toISOString()};if(!allowed){await logMarketingMessage({...base,status:'SKIPPED',error:'Missing channel consent, verified phone, or email'});return {channel,status:'SKIPPED',reason:'Missing channel consent, verified phone, or email'};}try{let response;if(channel==='whatsapp')response=await sendWhatsAppMarketingTemplate(customer.phone,opts.template_name||WHATSAPP_MARKETING_TEMPLATE_NAME,opts.template_language||WHATSAPP_MARKETING_LANGUAGE,opts.template_params||[]);else if(channel==='sms')response=await sendSmsText(customer.phone,(String(opts.body||'').trim()+'\nReply STOP to opt out.').trim());else if(channel==='email'){if(!gmailMailerReady)throw new Error('Email provider is not configured');const transporter=createMailTransport();response=await transporter.sendMail({from:mailFrom(),to:String(customer.email),subject:String(opts.subject||'A BBest Globly update'),text:String(opts.body||'')});}else throw new Error('Unsupported marketing channel');await logMarketingMessage({...base,status:'SENT',provider_message_id:String(response?.sid||response?.messages?.[0]?.id||response?.messageId||''),sent_at:new Date().toISOString()});return {channel,status:'SENT'};}catch(e){await logMarketingMessage({...base,status:'FAILED',error:e.message});return {channel,status:'FAILED',error:e.message};}}
 async function draftCustomerWelcomeMessage(customer){
   const name=String(customer?.name||'there').trim()||'there';
   const fallback='Congratulations '+name+'! Your BBest Globly account has been created successfully and your email has been verified. Welcome to BBest Globly.';
@@ -770,10 +787,10 @@ async function sendCustomerWelcomeNotifications(customer){
 
   if(customer.email&&gmailMailerReady){
     try{
-      const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
+      const transporter=createMailTransport();
       const safeHtml=message.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       await transporter.sendMail({
-        from:GMAIL_SMTP_USER,
+        from:mailFrom(),
         to:String(customer.email),
         subject:'Welcome to BBest Globly — Account created 🎉',
         text:message,
@@ -1549,8 +1566,8 @@ async function sendAdminLoginOtp(username,user){
   if(!gmailOtpReady)throw new Error('2FA email is not configured');
   if(!user?.email)throw new Error('Admin user has no recovery email');
   const otp=String(crypto.randomInt(100000,1000000)),salt=newSalt(),hash=hashPw(otp,salt),id='L2-'+crypto.randomBytes(8).toString('hex');
-  const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
-  await transporter.sendMail({from:GMAIL_SMTP_USER,to:user.email,subject:'BBest Globly admin login OTP',text:'Your login verification code is '+otp+'. It expires in 10 minutes.'});
+  const transporter=createMailTransport();
+  await transporter.sendMail({from:mailFrom(),to:user.email,subject:'BBest Globly admin login OTP',text:'Your login verification code is '+otp+'. It expires in 10 minutes.'});
   await supabaseRequest('admin_login_otps',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([{id,username,email:user.email,otp_hash:hash,otp_salt:salt,attempts:0,used:false,expires_at:new Date(Date.now()+10*60*1000).toISOString()}])});
 }
 async function verifyAdminLoginOtp(username,otp){
@@ -1804,10 +1821,12 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/auth/email/status' && req.method === 'GET') {
       return json(res,200,{
         ok:true,
-        provider:'gmail-smtp',
+        provider:SMTP_HOST?'custom-smtp':'gmail-smtp',
+        host:MAIL_HOST,
+        port:MAIL_PORT,
         nodemailer:!!nodemailer,
-        configured:!!(gmailOtpReady&&supabaseReady),
-        smtp_credentials:!!(GMAIL_SMTP_USER&&GMAIL_SMTP_APP_PASSWORD),
+        configured:!!(mailReady&&supabaseReady),
+        smtp_credentials:!!(SMTP_USER&&SMTP_PASSWORD&&SMTP_FROM),
         supabase:!!supabaseReady,
         message:'Secrets are not exposed by this endpoint.'
       });

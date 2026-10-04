@@ -491,8 +491,65 @@ function normalizePhone(value){let d=String(value||'').replace(/[^0-9]/g,'');if(
 function validPhone(value){return /^\+[1-9]\d{9,14}$/.test(normalizePhone(value));}
 function publicCustomer(c){return {id:c.id,name:c.name||'',email:c.email||'',phone:c.phone||'',phone_normalized:c.phone_normalized||normalizePhone(c.phone||''),phone_verified:!!c.phone_verified_at,email_verified:!!c.email_verified_at,marketing_opt_in:c.marketing_opt_in===true,marketing_email_opt_in:c.marketing_email_opt_in===true,marketing_sms_opt_in:c.marketing_sms_opt_in===true,marketing_whatsapp_opt_in:c.marketing_whatsapp_opt_in===true,preferred_marketing_channel:c.preferred_marketing_channel||null,profile_completed:!!c.profile_completed_at};}
 async function recordCustomerConsent(customerId,channel,granted,source='website',purpose='MARKETING'){if(!supabaseReady)return;const consentText='BBest Globly '+purpose.toLowerCase()+' messages via '+channel+'; relevant offers, product recommendations and seasonal updates where applicable.';const consentHash=crypto.createHash('sha256').update(consentText).digest('hex');const id='CONS-'+Date.now().toString(36)+'-'+crypto.randomBytes(4).toString('hex');await supabaseRequest('customer_consents',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([{id,customer_id:customerId,channel,purpose,granted:!!granted,source,consent_version:CUSTOMER_MARKETING_CONSENT_VERSION,consent_text_hash:consentHash,captured_at:new Date().toISOString(),revoked_at:granted?null:new Date().toISOString()}])});}
-async function issueCustomerOtp(phone){const missing=[];if(!TWILIO_ACCOUNT_SID)missing.push('TWILIO_ACCOUNT_SID');if(!TWILIO_AUTH_TOKEN)missing.push('TWILIO_AUTH_TOKEN');if(!TWILIO_OTP_FROM)missing.push('TWILIO_OTP_FROM or TWILIO_FROM');if(missing.length)throw new Error('Phone OTP is not configured. Missing Render variables: '+missing.join(', ')+'.');if(!validPhone(phone))throw new Error('Enter a valid mobile number with country code.');const normalized=normalizePhone(phone);const lockedUntil=Number(customerOtpLocks.get(normalized)||0);if(lockedUntil>Date.now())throw new Error('Too many incorrect OTP attempts. Try again after 15 minutes.');if(lockedUntil)customerOtpLocks.delete(normalized);if(!otpAllowed('customer-login:'+normalized))throw new Error('Please wait before requesting another OTP.');if(!supabaseReady)throw new Error('Supabase is required for secure OTP login.');const recent=await supabaseRequest('customer_otps?select=id&phone_normalized=eq.'+encodeURIComponent(normalized)+'&created_at=gte.'+encodeURIComponent(new Date(Date.now()-60*1000).toISOString())+'&limit=1');if(Array.isArray(recent)&&recent.length)throw new Error('OTP already sent. Wait a minute before requesting again.');const otp=String(crypto.randomInt(100000,1000000)),salt=newSalt(),hash=hashPw(otp,salt),id='COTP-'+crypto.randomBytes(8).toString('hex');await supabaseRequest('customer_otps',{method:'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify([{id,phone:String(phone).trim().slice(0,30),phone_normalized:normalized,purpose:'LOGIN',otp_hash:hash,otp_salt:salt,attempts:0,used:false,expires_at:new Date(Date.now()+CUSTOMER_OTP_TTL_MS).toISOString()}])});const body=new URLSearchParams({To:normalized,From:TWILIO_OTP_FROM,Body:'BBest Globly login OTP: '+otp+'. It expires in 10 minutes. Do not share this code.'});try{await externalJson('https://api.twilio.com/2010-04-01/Accounts/'+encodeURIComponent(TWILIO_ACCOUNT_SID)+'/Messages.json',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Authorization':'Basic '+Buffer.from(TWILIO_ACCOUNT_SID+':'+TWILIO_AUTH_TOKEN).toString('base64')},body});}catch(e){try{await supabaseRequest('customer_otps?id=eq.'+encodeURIComponent(id),{method:'DELETE'});}catch{}throw new Error('OTP could not be sent. Check the Twilio OTP/SMS configuration.');}return {ok:true,masked_phone:normalized.slice(0,4)+'••••'+normalized.slice(-3)};}
-async function verifyCustomerLoginOtp(phone,otp){if(!supabaseReady)throw new Error('Supabase is required for secure OTP login.');const normalized=normalizePhone(phone);if(!validPhone(phone))throw new Error('Enter a valid mobile number.');const rows=await supabaseRequest('customer_otps?select=*&phone_normalized=eq.'+encodeURIComponent(normalized)+'&used=eq.false&order=created_at.desc&limit=1');const row=Array.isArray(rows)?rows[0]:null;if(!row)throw new Error('OTP not found. Request a new OTP.');if(new Date(row.expires_at).getTime()<Date.now())throw new Error('OTP expired. Request a new OTP.');if(Number(row.attempts||0)>=5)throw new Error('Too many incorrect attempts. Request a new OTP.');const expected=hashPw(String(otp||'').trim(),row.otp_salt),a=Buffer.from(expected),b=Buffer.from(row.otp_hash);if(a.length!==b.length||!crypto.timingSafeEqual(a,b)){const nextAttempts=Number(row.attempts||0)+1;await supabaseRequest('customer_otps?id=eq.'+encodeURIComponent(row.id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify({attempts:nextAttempts})});if(nextAttempts>=5){customerOtpLocks.set(normalized,Date.now()+CUSTOMER_OTP_LOCK_MS);throw new Error('Too many incorrect OTP attempts. Try again after 15 minutes.');}throw new Error('Incorrect OTP.');}await supabaseRequest('customer_otps?id=eq.'+encodeURIComponent(row.id),{method:'PATCH',headers:{'Prefer':'return=minimal'},body:JSON.stringify({used:true})});const customers=readJSON('customers.json',[]);let customer=customers.find(x=>x.phone_normalized===normalized)||customers.find(x=>normalizePhone(x.phone||'')===normalized);const now=new Date().toISOString();if(!customer){customer={id:'CUS-'+crypto.randomBytes(4).toString('hex').toUpperCase(),name:'Customer',email:null,phone:String(phone).trim().slice(0,30),phone_normalized:normalized,phone_verified_at:now,email_verified_at:null,pass:null,salt:null,marketing_opt_in:false,marketing_opt_in_at:null,marketing_email_opt_in:false,marketing_sms_opt_in:false,marketing_whatsapp_opt_in:false,marketing_consent_at:null,marketing_consent_version:null,marketing_consent_source:null,preferred_marketing_channel:null,last_login_at:now,last_seen_at:now,profile_completed_at:null,created:now};customers.push(customer);}else{customer.phone=customer.phone||String(phone).trim().slice(0,30);customer.phone_normalized=normalized;customer.phone_verified_at=now;customer.last_login_at=now;customer.last_seen_at=now;if(customer.pass===undefined)customer.pass=null;if(customer.salt===undefined)customer.salt=null;}writeJSON('customers.json',customers);return {token:startSession('customer',customer.id),customer:publicCustomer(customer),is_new:customer.name==='Customer'&&!customer.email};}
+const CUSTOMER_EMAIL_OTP_TTL_MS=5*60*1000;
+const CUSTOMER_EMAIL_OTP_LOCK_MS=15*60*1000;
+const customerEmailOtpState=new Map();
+
+async function sendCustomerEmailOtp(email){
+  if(!gmailOtpReady) throw new Error('Email verification is not configured. Add GMAIL_SMTP_USER and GMAIL_SMTP_APP_PASSWORD in Render.');
+  const safeEmail=String(email||'').trim().toLowerCase();
+  if(!/^\\S+@\\S+\\.\\S+$/.test(safeEmail)) throw new Error('Enter a valid email address.');
+  const now=Date.now(), state=customerEmailOtpState.get(safeEmail)||{attempts:0,windowStart:now,lastSent:0,lockedUntil:0};
+  if(state.lockedUntil>now) throw new Error('Too many incorrect attempts. Try again after 15 minutes.');
+  if(now-state.windowStart>=60*60*1000){state.attempts=0;state.windowStart=now;}
+  if(state.attempts>=5) throw new Error('Too many verification attempts. Try again later.');
+  if(now-state.lastSent<60*1000) throw new Error('Please wait 60 seconds before requesting another verification code.');
+  const otp=String(crypto.randomInt(100000,1000000));
+  const salt=newSalt(),hash=hashPw(otp,salt);
+  const transporter=nodemailer.createTransport({host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}});
+  await transporter.sendMail({
+    from:GMAIL_SMTP_USER,to:safeEmail,subject:'BBest Globly — Email Verification',
+    text:'Your BBest Globly verification code is '+otp+'. It expires in 5 minutes. Do not share this code.',
+    html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>Your email verification code is:</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This code expires in 5 minutes. Do not share it.</p></div>'
+  });
+  state.lastSent=now;state.attempts++;state.otpHash=hash;state.otpSalt=salt;state.expiresAt=now+CUSTOMER_EMAIL_OTP_TTL_MS;
+  customerEmailOtpState.set(safeEmail,state);
+  return {ok:true,masked_email:safeEmail.replace(/^(.{2}).*(@.*)$/,'$1••••$2')};
+}
+
+async function verifyCustomerEmailOtp(email,otp,name,phone){
+  if(!gmailOtpReady) throw new Error('Email verification is not configured.');
+  const safeEmail=String(email||'').trim().toLowerCase();
+  if(!/^\\S+@\\S+\\.\\S+$/.test(safeEmail)) throw new Error('Enter a valid email address.');
+  const state=customerEmailOtpState.get(safeEmail);
+  if(!state?.otpHash) throw new Error('Verification code not found. Request a new code.');
+  if(state.lockedUntil>Date.now()) throw new Error('Too many incorrect attempts. Try again after 15 minutes.');
+  if(state.expiresAt<Date.now()) { customerEmailOtpState.delete(safeEmail); throw new Error('Verification code expired. Request a new code.'); }
+  const expected=hashPw(String(otp||'').trim(),state.otpSalt),a=Buffer.from(expected),b=Buffer.from(state.otpHash);
+  if(a.length!==b.length||!crypto.timingSafeEqual(a,b)){
+    state.wrongAttempts=(state.wrongAttempts||0)+1;
+    if(state.wrongAttempts>=5){state.lockedUntil=Date.now()+CUSTOMER_EMAIL_OTP_LOCK_MS;customerEmailOtpState.set(safeEmail,state);throw new Error('Too many incorrect verification attempts. Try again after 15 minutes.');}
+    customerEmailOtpState.set(safeEmail,state);
+    throw new Error('Incorrect verification code.');
+  }
+  customerEmailOtpState.delete(safeEmail);
+  const customers=readJSON('customers.json',[]);
+  const normalized=normalizePhone(phone);
+  if(!validPhone(phone)) throw new Error('Enter a valid 10-digit mobile number.');
+  let customer=customers.find(x=>String(x.email||'').toLowerCase()===safeEmail);
+  const nowIso=new Date().toISOString();
+  const cleanName=String(name||'').trim().slice(0,80);
+  if(!cleanName||cleanName.length<2) throw new Error('Full name is required.');
+  if(!customer){
+    customer={id:'CUS-'+crypto.randomBytes(4).toString('hex').toUpperCase(),name:cleanName,email:safeEmail,phone:String(phone).trim().slice(0,30),phone_normalized:normalized,phone_verified_at:null,email_verified_at:nowIso,pass:null,salt:null,marketing_opt_in:false,marketing_opt_in_at:null,marketing_email_opt_in:false,marketing_sms_opt_in:false,marketing_whatsapp_opt_in:false,marketing_consent_at:null,marketing_consent_version:null,marketing_consent_source:null,preferred_marketing_channel:null,last_login_at:nowIso,last_seen_at:nowIso,profile_completed_at:nowIso,created:nowIso};
+    customers.push(customer);
+  } else {
+    customer.name=cleanName;customer.email=safeEmail;customer.phone=String(phone).trim().slice(0,30);customer.phone_normalized=normalized;
+    customer.email_verified_at=nowIso;customer.last_login_at=nowIso;customer.last_seen_at=nowIso;customer.profile_completed_at=customer.profile_completed_at||nowIso;
+  }
+  writeJSON('customers.json',customers);
+  return {token:startSession('customer',customer.id),customer:publicCustomer(customer),is_new:customer.created===nowIso};
+}
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let b = '';
@@ -516,10 +573,7 @@ const RZP_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
 const WHATSAPP_TOKEN=String(process.env.WHATSAPP_TOKEN||'').trim();
 const WHATSAPP_PHONE_NUMBER_ID=String(process.env.WHATSAPP_PHONE_NUMBER_ID||'').trim();
 const WHATSAPP_GRAPH_VERSION=String(process.env.WHATSAPP_GRAPH_VERSION||'').trim();
-const TWILIO_ACCOUNT_SID=String(process.env.TWILIO_ACCOUNT_SID||'').trim();
-const TWILIO_AUTH_TOKEN=String(process.env.TWILIO_AUTH_TOKEN||'').trim();
-const TWILIO_FROM=String(process.env.TWILIO_FROM||'').trim();
-const TWILIO_OTP_FROM=String(process.env.TWILIO_OTP_FROM||TWILIO_FROM||'').trim();
+// Phone OTP is intentionally disabled. No Twilio credentials are used by customer authentication.
 const RESEARCH_API_URL=String(process.env.RESEARCH_API_URL||'').trim();
 const RESEARCH_API_KEY=String(process.env.RESEARCH_API_KEY||'').trim();
 const AD_SPEND_API_URL=String(process.env.AD_SPEND_API_URL||'').trim();
@@ -1647,8 +1701,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     /* ---------------- customer auth ---------------- */
-    if (p === '/api/auth/otp/request' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await issueCustomerOtp(b.phone));}catch(e){return json(res,400,{error:e.message});} }
-    if (p === '/api/auth/otp/verify' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await verifyCustomerLoginOtp(b.phone,b.otp));}catch(e){return json(res,401,{error:e.message});} }
+    if (p === '/api/auth/otp/request' && req.method === 'POST') return json(res,410,{error:'Phone OTP is disabled. Use email verification.'});
+    if (p === '/api/auth/otp/verify' && req.method === 'POST') return json(res,410,{error:'Phone OTP is disabled. Use email verification.'});
+    if (p === '/api/auth/email/request' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await sendCustomerEmailOtp(b.email));}catch(e){return json(res,400,{error:e.message});} }
+    if (p === '/api/auth/email/verify' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await verifyCustomerEmailOtp(b.email,b.otp,b.name,b.phone));}catch(e){return json(res,401,{error:e.message});} }
     if (p === '/api/auth/profile' && req.method === 'PATCH') {
       const a=getAuth(req);if(!a?.session?.customerId)return json(res,401,{error:'not logged in'});
       const b=await readBody(req),customers=readJSON('customers.json',[]),c=customers.find(x=>x.id===a.session.customerId);if(!c)return json(res,404,{error:'account not found'});

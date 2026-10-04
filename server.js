@@ -575,6 +575,10 @@ const WHATSAPP_TOKEN=String(process.env.WHATSAPP_TOKEN||'').trim();
 const WHATSAPP_PHONE_NUMBER_ID=String(process.env.WHATSAPP_PHONE_NUMBER_ID||'').trim();
 const WHATSAPP_GRAPH_VERSION=String(process.env.WHATSAPP_GRAPH_VERSION||'').trim();
 // Phone OTP is intentionally disabled. No Twilio credentials are used by customer authentication.
+const TWILIO_ACCOUNT_SID=String(process.env.TWILIO_ACCOUNT_SID||'').trim();
+const TWILIO_AUTH_TOKEN=String(process.env.TWILIO_AUTH_TOKEN||'').trim();
+const TWILIO_FROM=String(process.env.TWILIO_FROM||'').trim();
+const TWILIO_OTP_FROM=String(process.env.TWILIO_OTP_FROM||'').trim();
 const RESEARCH_API_URL=String(process.env.RESEARCH_API_URL||'').trim();
 const RESEARCH_API_KEY=String(process.env.RESEARCH_API_KEY||'').trim();
 const AD_SPEND_API_URL=String(process.env.AD_SPEND_API_URL||'').trim();
@@ -2348,7 +2352,7 @@ const server = http.createServer(async (req, res) => {
           shipping:{configured:!!(SHIPROCKET_EMAIL&&SHIPROCKET_PASSWORD&&SHIPROCKET_PICKUP_LOCATION),auto_fulfill:SHIPROCKET_AUTO_FULFILL},
           supplier_qikink:{configured:qikinkReady,auto_fulfill:QIKINK_AUTO_FULFILL},
           suppliers:{configured:supabaseReady,registry:true},
-          notifications:{whatsapp:!!WHATSAPP_TOKEN&&!!WHATSAPP_PHONE_NUMBER_ID,sms:!!TWILIO_ACCOUNT_SID,email:gmailOtpReady},customer_auth:{otp:!!(TWILIO_ACCOUNT_SID&&TWILIO_AUTH_TOKEN&&TWILIO_OTP_FROM&&supabaseReady),profile_persistence:supabaseReady},marketing:{email:gmailMailerReady,whatsapp_template:!!(WHATSAPP_TOKEN&&WHATSAPP_PHONE_NUMBER_ID&&WHATSAPP_GRAPH_VERSION&&WHATSAPP_MARKETING_TEMPLATE_NAME),sms:!!TWILIO_ACCOUNT_SID,audience_intelligence:supabaseReady,approval_gated:true},
+          notifications:{whatsapp:!!WHATSAPP_TOKEN&&!!WHATSAPP_PHONE_NUMBER_ID,sms:!!TWILIO_ACCOUNT_SID,email:gmailOtpReady},customer_auth:{email_verification:gmailOtpReady&&supabaseReady,phone_otp:false,profile_persistence:supabaseReady},marketing:{email:gmailMailerReady,whatsapp_template:!!(WHATSAPP_TOKEN&&WHATSAPP_PHONE_NUMBER_ID&&WHATSAPP_GRAPH_VERSION&&WHATSAPP_MARKETING_TEMPLATE_NAME),sms:!!TWILIO_ACCOUNT_SID,audience_intelligence:supabaseReady,approval_gated:true},
           refunds:{razorpay:RZP_REFUND_READY},
           research:{configured:!!(RESEARCH_API_URL&&RESEARCH_API_KEY),snapshots:true},
           ads:{configured:!!(AD_SPEND_API_URL&&AD_SPEND_API_KEY),campaign_store:true},

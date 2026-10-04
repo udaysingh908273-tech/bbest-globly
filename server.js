@@ -2805,8 +2805,15 @@ if (p === '/api/admin/marketing/personalized-plan' && req.method === 'POST') {
   }
 });
 
-hydrateSupabase().finally(() => {
-  ensureKnowledgeBase().catch(e=>console.error('[knowledge bootstrap]',e.message));
-  server.listen(PORT, '0.0.0.0', () => console.log('BBest Globly store v3.0 listening on http://0.0.0.0:' + PORT));
+server.on('error', (err) => {
+  console.error('[server] listen error:', err && err.stack ? err.stack : err);
 });
-// Render deployment marker: current main is syntax-checked and ready.
+
+server.listen(Number(PORT), '0.0.0.0', () => {
+  console.log('BBest Globly store v3.0 listening on http://0.0.0.0:' + Number(PORT));
+  hydrateSupabase()
+    .catch(e => console.error('[supabase hydrate]', e && e.stack ? e.stack : e))
+    .then(() => ensureKnowledgeBase().catch(e => console.error('[knowledge bootstrap]', e && e.stack ? e.stack : e)));
+});
+
+// Render deployment marker: startup work is non-blocking and errors are logged instead of terminating the HTTP server.

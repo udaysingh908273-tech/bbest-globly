@@ -586,7 +586,7 @@ const RZP_WEBHOOK_SECRET = process.env.RAZORPAY_WEBHOOK_SECRET || '';
 const WHATSAPP_TOKEN=String(process.env.WHATSAPP_TOKEN||'').trim();
 const WHATSAPP_PHONE_NUMBER_ID=String(process.env.WHATSAPP_PHONE_NUMBER_ID||'').trim();
 const WHATSAPP_GRAPH_VERSION=String(process.env.WHATSAPP_GRAPH_VERSION||'').trim();
-// Phone OTP is intentionally disabled. No Twilio credentials are used by customer authentication.
+// Customer authentication uses email verification codes. Twilio is not used for customer sign-in.
 const TWILIO_ACCOUNT_SID=String(process.env.TWILIO_ACCOUNT_SID||'').trim();
 const TWILIO_AUTH_TOKEN=String(process.env.TWILIO_AUTH_TOKEN||'').trim();
 const TWILIO_FROM=String(process.env.TWILIO_FROM||'').trim();
@@ -1729,8 +1729,9 @@ const server = http.createServer(async (req, res) => {
       if(name&&name!=='Customer'&&name.length<2)return json(res,400,{error:'Name is too short'});
       if(!email&&(!c.email||!String(c.email).trim()))return json(res,400,{error:'Email is required to complete this customer account'});
       if(email&&!/^\S+@\S+\.\S+$/.test(email))return json(res,400,{error:'Invalid email address'});
-      if(email&&customers.some(x=>x.id!==c.id&&x.email===email))return json(res,409,{error:'This email is already linked to another account'});
-      if(name)c.name=name;if(b.email!==undefined)c.email=email||null;
+      if(email&&customers.some(x=>x.id!==c.id&&String(x.email||'').trim().toLowerCase()===email))return json(res,409,{error:'This email is already linked to another account'});
+      if(email&&String(c.email||'').trim().toLowerCase()!==email)return json(res,400,{error:'Email changes require a new email-verification flow. Your verified login email cannot be changed here.'});
+      if(name)c.name=name;
       for(const key of ['marketing_email_opt_in','marketing_sms_opt_in','marketing_whatsapp_opt_in'])if(typeof b[key]==='boolean'){c[key]=b[key];await recordCustomerConsent(c.id,key.replace('marketing_','').replace('_opt_in',''),b[key],'website','MARKETING');}
       c.marketing_opt_in=!!(c.marketing_email_opt_in||c.marketing_sms_opt_in||c.marketing_whatsapp_opt_in);
       c.marketing_opt_in_at=c.marketing_opt_in?new Date().toISOString():null;

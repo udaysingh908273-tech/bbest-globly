@@ -534,9 +534,10 @@ async function verifyCustomerEmailOtp(email,otp,name,phone){
   }
   customerEmailOtpState.delete(safeEmail);
   const customers=readJSON('customers.json',[]);
-  const normalized=normalizePhone(phone);
-  if(!validPhone(phone)) throw new Error('Enter a valid 10-digit mobile number.');
   let customer=customers.find(x=>String(x.email||'').toLowerCase()===safeEmail);
+  let normalized=customer?.phone_normalized||normalizePhone(phone);
+  if(!customer && !validPhone(phone)) throw new Error('Enter a valid 10-digit mobile number.');
+  if(!normalized && !validPhone(phone)) throw new Error('A valid mobile number is required.');
   const nowIso=new Date().toISOString();
   const cleanName=String(name||'').trim().slice(0,80);
   if(!cleanName||cleanName.length<2) throw new Error('Full name is required.');

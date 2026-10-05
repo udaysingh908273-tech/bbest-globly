@@ -9,29 +9,24 @@ const path = require('path');
 const crypto = require('crypto');
 let nodemailer = null;
 try { nodemailer = require('nodemailer'); } catch {}
-const GMAIL_SMTP_USER = String(process.env.GMAIL_SMTP_USER || '').trim();
+const GMAIL_SMTP_USER = String(process.env.GMAIL_SMTP_USER || '').trim().toLowerCase();
 const GMAIL_SMTP_APP_PASSWORD = String(process.env.GMAIL_SMTP_APP_PASSWORD || '').replace(/\s+/g,'');
-const SMTP_HOST = String(process.env.SMTP_HOST || '').trim();
-const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
-const SMTP_SECURE = String(process.env.SMTP_SECURE || (SMTP_PORT===465 ? 'true' : 'false')).toLowerCase()==='true';
-const SMTP_USER = String(process.env.SMTP_USER || GMAIL_SMTP_USER).trim();
-const SMTP_PASSWORD = String(process.env.SMTP_PASSWORD || GMAIL_SMTP_APP_PASSWORD).replace(/\s+/g,'');
 const SMTP_FROM = String(process.env.SMTP_FROM || GMAIL_SMTP_USER).trim();
 const SMTP_FROM_NAME = String(process.env.SMTP_FROM_NAME || 'BBest Globly').trim();
-const MAIL_HOST = SMTP_HOST || 'smtp.gmail.com';
-const MAIL_PORT = SMTP_HOST ? SMTP_PORT : 465;
-const MAIL_SECURE = SMTP_HOST ? SMTP_SECURE : true;
-const mailReady = !!(nodemailer && SMTP_USER && SMTP_PASSWORD && SMTP_FROM);
+const MAIL_HOST = 'smtp.gmail.com';
+const MAIL_PORT = 465;
+const MAIL_SECURE = true;
+const mailReady = !!(nodemailer && GMAIL_SMTP_USER && GMAIL_SMTP_APP_PASSWORD && SMTP_FROM);
 const ADMIN_RECOVERY_EMAIL = String(process.env.ADMIN_RECOVERY_EMAIL || GMAIL_SMTP_USER || SMTP_FROM).trim().toLowerCase();
 const gmailOtpReady = !!(mailReady && ADMIN_RECOVERY_EMAIL);
 function createMailTransport(){
-  if(!mailReady) throw new Error('Email provider is not configured. Add SMTP_HOST, SMTP_USER, SMTP_PASSWORD and SMTP_FROM in Render.');
+  if(!mailReady) throw new Error('Gmail email service is not configured. Add GMAIL_SMTP_USER and GMAIL_SMTP_APP_PASSWORD in Render.');
   return nodemailer.createTransport({
+    service:'gmail',
     host:MAIL_HOST,
     port:MAIL_PORT,
     secure:MAIL_SECURE,
-    ...(MAIL_SECURE ? {} : {requireTLS:true}),
-    auth:{user:SMTP_USER,pass:SMTP_PASSWORD}
+    auth:{user:GMAIL_SMTP_USER,pass:GMAIL_SMTP_APP_PASSWORD}
   });
 }
 function mailFrom(){
@@ -405,12 +400,11 @@ async function resetAdminPassword(newPassword) {
   });
 }
 async function sendAdminOtp(email){
-  if(!gmailOtpReady) throw new Error('Email OTP is not configured. Add SMTP_USER, SMTP_PASSWORD and ADMIN_RECOVERY_EMAIL in Render.');
+  if(!gmailOtpReady) throw new Error('Email OTP is not configured. Add GMAIL_SMTP_USER, GMAIL_SMTP_APP_PASSWORD and ADMIN_RECOVERY_EMAIL in Render.');
   const safeEmail=String(email||'').trim().toLowerCase();
   if(safeEmail!==ADMIN_RECOVERY_EMAIL) throw new Error('This email is not the configured admin recovery email.');
   const otp=String(crypto.randomInt(100000,1000000));
   const salt=newSalt(), hash=hashPw(otp,salt), id='OTP-'+crypto.randomBytes(8).toString('hex');
-  const smtpPass=GMAIL_SMTP_APP_PASSWORD.replace(/\s+/g,'');
   let transporter=createMailTransport();
   try{
     await transporter.verify();
@@ -538,7 +532,7 @@ async function sendCustomerEmailOtp(email,mode='login'){
     await transporter.verify();
   }catch(e){
     console.error('[customer email otp] SMTP verify failed:',e.code||'',e.responseCode||'',e.message||'unknown error');
-    throw new Error('Email service connection failed. Check the Brevo SMTP Login, SMTP Key, server and port in Render.');
+    throw new Error('Email service connection failed. Check GMAIL_SMTP_USER and GMAIL_SMTP_APP_PASSWORD in Render.');
   }
 
   try{
@@ -551,7 +545,7 @@ async function sendCustomerEmailOtp(email,mode='login'){
     });
   }catch(e){
     console.error('[customer email otp] SMTP send failed:',e.code||'',e.responseCode||'',e.message||'unknown error');
-    throw new Error('OTP could not be sent. Make sure the Brevo sender email in SMTP_FROM is verified.');
+    throw new Error('OTP could not be sent. Check the Gmail App Password and SMTP_FROM sender email in Render.');
   }
 
   state.lastSent=now;
@@ -1829,12 +1823,14 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res,200,{
         ok:!!(mailReady&&supabaseReady&&smtpConnection),
-        provider:SMTP_HOST?'custom-smtp':'gmail-smtp',
+        provider:'gmail-smtp',
         host:MAIL_HOST,
         port:MAIL_PORT,
         nodemailer:!!nodemailer,
         configured:!!(mailReady&&supabaseReady),
-        smtp_credentials:!!(SMTP_USER&&SMTP_PASSWORD&&SMTP_FROM),
+        gmail_user_configured:!!GMAIL_SMTP_USER,
+        gmail_app_password_configured:!!GMAIL_SMTP_APP_PASSWORD,
+        sender:SMTP_FROM,
         smtp_connection:smtpConnection,
         supabase:!!supabaseReady,
         error_code:errorCode

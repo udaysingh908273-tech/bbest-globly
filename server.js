@@ -515,7 +515,7 @@ const CUSTOMER_EMAIL_OTP_LOCK_MS=15*60*1000;
 const customerEmailOtpState=new Map();
 
 async function sendCustomerEmailOtp(email,mode='login'){
-  if(!gmailOtpReady) throw new Error('Email verification is not configured. Add your SMTP email settings in Render.');
+  if(!gmailOtpReady) throw new Error('Email verification is not configured. Check SMTP settings in Render.');
   mode=mode==='register'?'register':'login';
   const safeEmail=String(email||'').trim().toLowerCase();
   if(!/^\S+@\S+\.\S+$/.test(safeEmail)) throw new Error('Enter a valid email address.');
@@ -523,43 +523,46 @@ async function sendCustomerEmailOtp(email,mode='login'){
   const existing=customers.find(x=>String(x.email||'').trim().toLowerCase()===safeEmail);
   if(mode==='login'&&!existing) throw new Error('No customer account was found for this email. Please create an account first.');
   if(mode==='register'&&existing) throw new Error('An account already exists for this email. Please use Login.');
-  const now=Date.now(), key=mode+':'+safeEmail, state=customerEmailOtpState.get(key)||{attempts:0,windowStart:now,lastSent:0,wrongAttempts:0,lockedUntil:0};
+  const now=Date.now(),key=mode+':'+safeEmail;
+  const state=customerEmailOtpState.get(key)||{attempts:0,windowStart:now,lastSent:0,wrongAttempts:0,lockedUntil:0};
   if(state.lockedUntil>now) throw new Error('Too many incorrect attempts. Try again after 15 minutes.');
   if(now-state.windowStart>=60*60*1000){state.attempts=0;state.windowStart=now;state.wrongAttempts=0;}
   if(state.attempts>=5) throw new Error('Too many verification attempts. Try again later.');
   if(now-state.lastSent<60*1000) throw new Error('Please wait 60 seconds before requesting another verification code.');
+
   const otp=String(crypto.randomInt(100000,1000000));
   const salt=newSalt(),hash=hashPw(otp,salt);
-  const smtpPass=GMAIL_SMTP_APP_PASSWORD.replace(/\s+/g,'');
-  const smtpConfigs=[
-    {host:'smtp.gmail.com',port:587,secure:false,requireTLS:true,auth:{user:GMAIL_SMTP_USER,pass:smtpPass}},
-    {host:'smtp.gmail.com',port:465,secure:true,auth:{user:GMAIL_SMTP_USER,pass:smtpPass}}
-  ];
-  let lastSmtpError=null, sent=false;
-  for(const cfg of smtpConfigs){
-    try{
-      const transporter=nodemailer.createTransport(cfg);
-      await transporter.verify();
-      await transporter.sendMail({
-        from:mailFrom(),to:safeEmail,
-        subject:mode==='register'?'BBest Globly — Verify your email':'BBest Globly — Login verification code',
-        text:(mode==='register'?'Your BBest Globly email verification code is ':'Your BBest Globly login verification code is ')+otp+'. It expires in 5 minutes. Do not share this code.',
-        html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>'+(mode==='register'?'Your email verification code is:':'Your login verification code is:')+'</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This code expires in 5 minutes. Do not share it.</p></div>'
-      });
-      sent=true;break;
-    }catch(e){
-      lastSmtpError=e;
-      console.error('[customer email otp] SMTP failed on '+cfg.port+':',e.code||'',e.responseCode||'',e.message||'unknown error');
-    }
+  let transporter;
+  try{
+    transporter=createMailTransport();
+    await transporter.verify();
+  }catch(e){
+    console.error('[customer email otp] SMTP verify failed:',e.code||'',e.responseCode||'',e.message||'unknown error');
+    throw new Error('Email service connection failed. Check the Brevo SMTP Login, SMTP Key, server and port in Render.');
   }
-  if(!sent){
-    throw new Error('OTP email could not be sent. Check GMAIL_SMTP_USER and GMAIL_SMTP_APP_PASSWORD, then redeploy on Render. '+String(lastSmtpError?.code||lastSmtpError?.responseCode||'SMTP_ERROR'));
+
+  try{
+    await transporter.sendMail({
+      from:mailFrom(),
+      to:safeEmail,
+      subject:mode==='register'?'BBest Globly — Verify your email':'BBest Globly — Login verification code',
+      text:(mode==='register'?'Your BBest Globly email verification code is ':'Your BBest Globly login verification code is ')+otp+'. It expires in 5 minutes. Do not share this code.',
+      html:'<div style="font-family:Arial,sans-serif"><h2>BBest Globly</h2><p>'+(mode==='register'?'Your email verification code is:':'Your login verification code is:')+'</p><p style="font-size:30px;font-weight:700;letter-spacing:6px">'+otp+'</p><p>This code expires in 5 minutes. Do not share it.</p></div>'
+    });
+  }catch(e){
+    console.error('[customer email otp] SMTP send failed:',e.code||'',e.responseCode||'',e.message||'unknown error');
+    throw new Error('OTP could not be sent. Make sure the Brevo sender email in SMTP_FROM is verified.');
   }
-  state.lastSent=now;state.attempts++;state.otpHash=hash;state.otpSalt=salt;state.expiresAt=now+CUSTOMER_EMAIL_OTP_TTL_MS;state.mode=mode;
+
+  state.lastSent=now;
+  state.attempts++;
+  state.otpHash=hash;
+  state.otpSalt=salt;
+  state.expiresAt=now+CUSTOMER_EMAIL_OTP_TTL_MS;
+  state.mode=mode;
   customerEmailOtpState.set(key,state);
   return {ok:true,masked_email:safeEmail.replace(/^(.{2}).*(@.*)$/,'$1••••$2'),mode};
 }
-
 async function verifyCustomerEmailOtp(email,otp,name,phone,mode='login'){
   if(!gmailOtpReady) throw new Error('Email verification is not configured.');
   mode=mode==='register'?'register':'login';
@@ -1819,16 +1822,22 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/auth/otp/request' && req.method === 'POST') { const b=await readBody(req); if(!b.email)return json(res,400,{error:'Customer authentication now uses email verification. Please enter your email address.'}); try{return json(res,200,await sendCustomerEmailOtp(b.email,b.mode));}catch(e){return json(res,400,{error:e.message});} }
     if (p === '/api/auth/otp/verify' && req.method === 'POST') { const b=await readBody(req); if(!b.email)return json(res,400,{error:'Customer authentication now uses email verification. Please enter your email address.'}); try{return json(res,200,await verifyCustomerEmailOtp(b.email,b.otp,b.name,b.phone,b.mode));}catch(e){return json(res,401,{error:e.message});} }
     if (p === '/api/auth/email/status' && req.method === 'GET') {
+      let smtpConnection=false, errorCode=null;
+      if(mailReady){
+        try{const t=createMailTransport();await t.verify();smtpConnection=true;}
+        catch(e){errorCode=String(e.code||e.responseCode||'SMTP_ERROR');console.error('[email status] SMTP verify failed:',errorCode,e.message||'');}
+      }
       return json(res,200,{
-        ok:true,
+        ok:!!(mailReady&&supabaseReady&&smtpConnection),
         provider:SMTP_HOST?'custom-smtp':'gmail-smtp',
         host:MAIL_HOST,
         port:MAIL_PORT,
         nodemailer:!!nodemailer,
         configured:!!(mailReady&&supabaseReady),
         smtp_credentials:!!(SMTP_USER&&SMTP_PASSWORD&&SMTP_FROM),
+        smtp_connection:smtpConnection,
         supabase:!!supabaseReady,
-        message:'Secrets are not exposed by this endpoint.'
+        error_code:errorCode
       });
     }
     if (p === '/api/auth/email/request' && req.method === 'POST') { const b=await readBody(req); try{return json(res,200,await sendCustomerEmailOtp(b.email,b.mode));}catch(e){return json(res,400,{error:e.message});} }
@@ -2471,12 +2480,12 @@ const server = http.createServer(async (req, res) => {
           ok:true,
           persistence:{configured:supabaseReady},
           ai:{configured:aiReady,liveResearchConfigured:!!(process.env.RESEARCH_API_URL&&process.env.RESEARCH_API_KEY)},
-          password_recovery:{configured:gmailOtpReady},
+          password_recovery:{configured:mailReady&&!!ADMIN_RECOVERY_EMAIL},
           payments:{configured:paymentsReady,webhook_secret:!!RZP_WEBHOOK_SECRET},
           shipping:{configured:!!(SHIPROCKET_EMAIL&&SHIPROCKET_PASSWORD&&SHIPROCKET_PICKUP_LOCATION),auto_fulfill:SHIPROCKET_AUTO_FULFILL},
           supplier_qikink:{configured:qikinkReady,auto_fulfill:QIKINK_AUTO_FULFILL},
           suppliers:{configured:supabaseReady,registry:true},
-          notifications:{whatsapp:!!WHATSAPP_TOKEN&&!!WHATSAPP_PHONE_NUMBER_ID,sms:!!TWILIO_ACCOUNT_SID,email:gmailOtpReady},customer_auth:{email_verification:gmailOtpReady&&supabaseReady,phone_otp:false,profile_persistence:supabaseReady},marketing:{email:gmailMailerReady,whatsapp_template:!!(WHATSAPP_TOKEN&&WHATSAPP_PHONE_NUMBER_ID&&WHATSAPP_GRAPH_VERSION&&WHATSAPP_MARKETING_TEMPLATE_NAME),sms:!!TWILIO_ACCOUNT_SID,audience_intelligence:supabaseReady,approval_gated:true},
+          notifications:{whatsapp:!!WHATSAPP_TOKEN&&!!WHATSAPP_PHONE_NUMBER_ID,sms:!!TWILIO_ACCOUNT_SID,email:gmailOtpReady},customer_auth:{email_verification:mailReady&&supabaseReady,phone_otp:false,profile_persistence:supabaseReady},marketing:{email:gmailMailerReady,whatsapp_template:!!(WHATSAPP_TOKEN&&WHATSAPP_PHONE_NUMBER_ID&&WHATSAPP_GRAPH_VERSION&&WHATSAPP_MARKETING_TEMPLATE_NAME),sms:!!TWILIO_ACCOUNT_SID,audience_intelligence:supabaseReady,approval_gated:true},
           refunds:{razorpay:RZP_REFUND_READY},
           research:{configured:!!(RESEARCH_API_URL&&RESEARCH_API_KEY),snapshots:true},
           ads:{configured:!!(AD_SPEND_API_URL&&AD_SPEND_API_KEY),campaign_store:true},

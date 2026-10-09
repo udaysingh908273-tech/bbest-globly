@@ -1,23 +1,26 @@
-# AI Video Studio Pro — isolated staging snapshot
+# AI Video Studio Pro — isolated staging branch
 
-This branch contains a free-first video editing MVP for local use. The ecommerce repository's `main` branch is not changed.
+This is a staging note for the AI Video Studio Pro MVP. It is intentionally on the `ai-video-studio-pro` branch; the ecommerce site's `main` branch has not been changed.
 
-## Download and run
+## Source package
 
-Download `ai-video-studio-pro.zip` from this branch, extract it, then on Windows run `start_windows.bat` after installing FFmpeg. See the project's `README.md` for requirements and manual setup.
+The complete starter source archive was built and tested in the current ChatGPT session and is attached in that conversation as `ai-video-studio-pro.zip`. The archive has not been uploaded as a binary asset into this GitHub branch yet.
 
-## What works
+## What the MVP supports
 
-- Project persistence in SQLite
-- Media upload and FFprobe metadata inspection
-- Editable ordered clip timeline with trim points
-- Optional title overlay, subtitle sidecars, and background music
-- Real FFmpeg H.264/AAC MP4 rendering and job progress
-- Post-export FFprobe metadata report
-- Offline content-planning templates, optional Ollama local LLM, and optional no-key source discovery
+- Local project persistence in SQLite.
+- Video/image/audio upload and FFprobe metadata inspection.
+- Editable ordered clip timeline and trim points.
+- Optional title overlay, subtitle sidecars, and background music.
+- Real FFmpeg H.264/AAC MP4 rendering and render job status.
+- Post-export FFprobe metadata report.
+- Offline content-planning templates.
+- Optional Ollama local LLM integration and optional no-key source discovery.
 
-## Important
+## Important limitations
 
-This is a starter MVP, not a fully-trained AI or a full nonlinear editor. Live web search depends on the optional `ddgs` package and may be rate-limited. Ollama needs to be installed/configured locally. An exported file's quality report checks metadata and does not guarantee audience reach or viral results.
+This is a working starter MVP, not a fully trained AI system or a full nonlinear editor. Live search needs the optional `ddgs` package and may be rate-limited. Ollama must be installed and configured locally. Captioning with faster-whisper is optional. The current quality report checks file metadata, not guaranteed visual/perceptual quality. No tool can guarantee views or viral reach.
 
-This staging branch belongs to the existing `bbest-globly` repository because the connected GitHub actions do not expose repository creation. Do not merge this branch into the ecommerce site's `main`; create a separate repository and move the video-studio folder/archive there when repository creation is available.
+## Repository note
+
+The connected GitHub actions do not expose repository creation. To keep the ecommerce store isolated, do not merge this branch into `main`. Create a separate repository named `ai-video-studio-pro` in GitHub, download the source ZIP from the conversation, extract it, and push those files into the new repository.
